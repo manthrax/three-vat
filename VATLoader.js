@@ -291,18 +291,35 @@ export class VATLoader {
     }
     mesh.visible = false;
 
-    // Rename attributes to vatUv1, vatUv2, vatUv3 to bypass standard Three.js UV naming shifts/collisions
     if (mesh.geometry.attributes.uv1) {
       mesh.geometry.setAttribute('vatUv1', mesh.geometry.attributes.uv1);
       mesh.geometry.deleteAttribute('uv1');
     }
-    if (mesh.geometry.attributes.uv2) {
-      mesh.geometry.setAttribute('vatUv2', mesh.geometry.attributes.uv2);
+    if (mesh.geometry.attributes.uv2 && mesh.geometry.attributes.uv3) {
+      const uv2 = mesh.geometry.attributes.uv2;
+      const uv3 = mesh.geometry.attributes.uv3;
+      const count = uv2.count;
+      const pivotArr = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        // Original shader pivot encoding: vec3(uv2.x, uv3.x, uv3.y)
+        // Variant 2 (VAT3 Rigidbody): position - vatPivot directly
+        // Variant 5 (Legacy Rigidbody): position - vec3(vatPivot.x, vatPivot.y, 1.0 - vatPivot.z)
+        pivotArr[i * 3 + 0] = uv2.getX(i);  // vatPivot.x = uv2.x
+        pivotArr[i * 3 + 1] = uv3.getX(i);  // vatPivot.y = uv3.x
+        pivotArr[i * 3 + 2] = uv3.getY(i);  // vatPivot.z = uv3.y
+      }
+      mesh.geometry.setAttribute('vatPivot', new THREE.BufferAttribute(pivotArr, 3));
       mesh.geometry.deleteAttribute('uv2');
-    }
-    if (mesh.geometry.attributes.uv3) {
-      mesh.geometry.setAttribute('vatUv3', mesh.geometry.attributes.uv3);
       mesh.geometry.deleteAttribute('uv3');
+    } else {
+      if (mesh.geometry.attributes.uv2) {
+        mesh.geometry.setAttribute('vatUv2', mesh.geometry.attributes.uv2);
+        mesh.geometry.deleteAttribute('uv2');
+      }
+      if (mesh.geometry.attributes.uv3) {
+        mesh.geometry.setAttribute('vatUv3', mesh.geometry.attributes.uv3);
+        mesh.geometry.deleteAttribute('uv3');
+      }
     }
 
     // 3. Load Textures

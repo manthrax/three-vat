@@ -1,0 +1,19 @@
+[
+    {
+        "Axis System": "Right-Handed Y-Up",
+        "Bound Max X": 0.9299999475479126,
+        "Bound Max Y": 0.5,
+        "Bound Max Z": 0.30000001192092896,
+        "Bound Min X": -1.0,
+        "Bound Min Y": -0.5019999742507935,
+        "Bound Min Z": -0.10000000149011612,
+        "Frame Count": 94,
+        "Houdini FPS": 30.0,
+        "Name": "vat3_debugIsolate",
+        "Spare Color Texture": 0,
+        "Two Position Textures": 0,
+        "Use HDR Textures": 0,
+        "VAT Type": "DynamicMesh",
+        "Vertex Count": 8
+    }
+]

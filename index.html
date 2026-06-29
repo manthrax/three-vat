@@ -493,94 +493,107 @@
 
       const loadPromises = config.map(async (cfg) => {
         loadingTextEl.innerText = `Loading ${cfg.label}...`;
-        try {
-          const assets = await VATLoader.load('examples/', cfg.name);
+        const assets = await VATLoader.load('examples/', cfg.name);
 
-          let options = { camera };
+        let options = { camera };
 
-          // 1. Resolve material overrides
-          let material = Array.isArray(assets.mesh.material) ? assets.mesh.material[0] : assets.mesh.material;
+        // 1. Resolve material overrides
+        let material = Array.isArray(assets.mesh.material) ? assets.mesh.material[0] : assets.mesh.material;
 
-          if (cfg.name === 'vat3_particles') {
-            const textureUrl = 'examples/vat3_particles/vat3_particles_col.png';
+        if (cfg.name === 'vat3_particles') {
+          try {
+            const textureUrl = `examples/vat3_particles/vat3_particles_col.png`;
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
             material = new THREE.MeshStandardMaterial({ map: albedo });
             options.albedoTexture = albedo;
-          } else if (cfg.name === 'vat3_softBody') {
-            const textureUrl = 'examples/vat3_softbody/flag_banner_red.jpg';
+          } catch (e) {
+            console.warn('vat3_particles: albedo texture failed to load', e);
+            material = new THREE.MeshStandardMaterial({ color: 'white' });
+          }
+        } else if (cfg.name === 'vat3_softBody') {
+          try {
+            const textureUrl = `examples/vat3_softBody/flag_banner_red.jpg`;
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
             material = new THREE.MeshStandardMaterial({ map: albedo });
             options.albedoTexture = albedo;
-          } else if (cfg.name === 'demo_fluid') {
-            material = new THREE.MeshPhysicalMaterial({
-              color: 0xff0000,
-              roughness: 0.2,
-              metalness: 0.1,
-            });
-          } else if (cfg.name === 'demo_rigid_body') {
-            material = new THREE.MeshStandardMaterial();
-          } else {
-            // Clone to avoid sharing material settings across instances of other classes
-            material = material.clone();
+          } catch (e) {
+            console.warn('vat3_softBody: albedo texture failed to load', e);
+            material = new THREE.MeshStandardMaterial({ color: 'white' });
           }
-
-          // 2. Create InstancedMesh with 10 instances (max capacity) extending in negative Z
-          const count = 100;
-          const instancedMesh = new THREE.InstancedMesh(assets.mesh.geometry, material, count);
-
-          const dummy = new THREE.Object3D();
-          for (let j = 0; j < count; j++) {
-            // Extend backward in Z
-            dummy.position.set(0, 0, -j * 3.5);
-            // Apply scale overrides
-            if (cfg.name === 'vat3_particles') {
-              dummy.scale.setScalar(0.1);
-            } else {
-              dummy.scale.setScalar(1.0);
-            }
-            if (j) dummy.rotation.y = Math.random() * Math.PI * 2
-            dummy.updateMatrix();
-            instancedMesh.setMatrixAt(j, dummy.matrix);
-          }
-          instancedMesh.instanceMatrix.needsUpdate = true;
-          instancedMesh.frustumCulled = false;
-
-          // Set initial visible count
-          instancedMesh.count = currentInstances;
-          options.instancedMesh = instancedMesh;
-
-          const vat = new VATEffect(assets, options);
-          vat.speed = playSpeed;
-          vat.setEnabled(isPlaying);
-
-          // 3. Stagger start times and playback speeds for all 10 instances
-          for (let j = 0; j < count; j++) {
-            vat.setInstanceTimeOffset(j, j * 0.4);
-            vat.setInstanceSpeedScale(j, 0.8 + Math.random() * 0.4);
-          }
-
-          // Place in row
-          if (cfg.posX) vat.mesh.position.x = cfg.posX;
-          if (cfg.posY) vat.mesh.position.y = cfg.posY;
-
-          let effectContainer = new THREE.Object3D();
-          effectContainer.add(vat.mesh);
-          scene.add(effectContainer);
-          // Add HTML floating label element
-          const labelDiv = document.createElement('div');
-          labelDiv.className = 'floating-label';
-          labelDiv.innerText = cfg.label;
-          labelsContainer.appendChild(labelDiv);
-
-          vats.push({
-            name: cfg.name,
-            vat,
-            labelEl: labelDiv,
-            posX: cfg.posX
+        } else if (cfg.name === 'demo_fluid') {
+          material = new THREE.MeshPhysicalMaterial({
+            color: 'white',
+            roughness: 0.2,
+            metalness: 0.1,
           });
-        } catch (err) {
-          console.error(`Error loading ${cfg.label}:`, err);
+        } else if (cfg.name === 'demo_rigid_body') {
+          material = new THREE.MeshStandardMaterial();
+        } else {
+          // Clone to avoid sharing material settings across instances of other classes
+          material = material.clone();
         }
+
+        // 2. Create InstancedMesh with 100 instances (max capacity) extending in negative Z
+        const count = 100;
+        const instancedMesh = new THREE.InstancedMesh(assets.mesh.geometry, material, count);
+
+        const dummy = new THREE.Object3D();
+        const color = new THREE.Color();
+        for (let j = 0; j < count; j++) {
+          // Extend backward in Z
+          dummy.position.set(0, 0, -j * 3.5);
+          if (cfg.name === 'vat3_particles') dummy.scale.setScalar(0.1);
+          if (j) dummy.rotation.y = Math.random() * Math.PI * 2;
+          dummy.updateMatrix();
+          instancedMesh.setMatrixAt(j, dummy.matrix);
+
+          // Stagger colors (j = 0 is white/standard, others are randomized)
+          if (j === 0) {
+            instancedMesh.setColorAt(j, new THREE.Color(0xffffff));
+          } else {
+            color.setHSL(Math.random(), 0.75, 0.5);
+            instancedMesh.setColorAt(j, color);
+          }
+        }
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        if (instancedMesh.instanceColor) {
+          instancedMesh.instanceColor.needsUpdate = true;
+        }
+        instancedMesh.frustumCulled = false;
+
+        // Set initial visible count
+        instancedMesh.count = currentInstances;
+        options.instancedMesh = instancedMesh;
+
+        const vat = new VATEffect(assets, options);
+        vat.speed = playSpeed;
+        vat.setEnabled(isPlaying);
+
+        // Stagger start times and playback speeds across all instances
+        for (let j = 0; j < count; j++) {
+          vat.setInstanceTimeOffset(j, j * 0.4);
+          vat.setInstanceSpeedScale(j, 0.8 + Math.random() * 0.4);
+        }
+
+        // Place in row
+        if (cfg.posX) vat.mesh.position.x = cfg.posX;
+        if (cfg.posY) vat.mesh.position.y = cfg.posY;
+
+        let effectContainer = new THREE.Object3D();
+        effectContainer.add(vat.mesh);
+        scene.add(effectContainer);
+        // Add HTML floating label element
+        const labelDiv = document.createElement('div');
+        labelDiv.className = 'floating-label';
+        labelDiv.innerText = cfg.label;
+        labelsContainer.appendChild(labelDiv);
+
+        vats.push({
+          name: cfg.name,
+          vat,
+          labelEl: labelDiv,
+          posX: cfg.posX
+        });
       });
 
       await Promise.all(loadPromises);

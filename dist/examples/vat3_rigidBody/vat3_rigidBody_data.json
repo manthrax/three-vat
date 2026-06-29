@@ -1,0 +1,19 @@
+[
+    {
+        "Axis System": "Right-Handed Y-Up",
+        "Bound Max X": 1.600000023841858,
+        "Bound Max Y": 4.0,
+        "Bound Max Z": 1.3499999046325684,
+        "Bound Min X": -1.399999976158142,
+        "Bound Min Y": -0.3009999990463257,
+        "Bound Min Z": -2.0999999046325684,
+        "Frame Count": 150,
+        "Houdini FPS": 30.0,
+        "Name": "vat3_rigidBody",
+        "Spare Color Texture": 0,
+        "Two Position Textures": 0,
+        "Use HDR Textures": 1,
+        "VAT Type": "Rigidbody",
+        "Vertex Count": 8
+    }
+]

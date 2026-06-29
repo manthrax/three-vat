@@ -547,13 +547,12 @@ vec4 computeRigidQuaternion(Vat3_TexturesData textures, float interpolationAlpha
   );
 }
 
-vec3 getRigidPivot(vec3 position, vec2 uv2, vec2 uv3) {
-  vec3 restFramePosition = vec3(uv2.x, uv3.x, uv3.y);
-  return position - restFramePosition;
+vec3 getRigidPivot(vec3 position, vec3 vatPivot) {
+  return position - vatPivot;
 }
 
 // Main deformation router
-Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 uv, vec2 uv1, vec2 uv2, vec2 uv3, int variant) {
+Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 uv, vec2 uv1, vec3 vatPivot, int variant) {
   Vat3_Outputs vatOutputs;
   
   Vat3_AnimationData animData = computeAnimationData();
@@ -657,8 +656,7 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     
     vec3 piecePosition = shouldInterpolate ? mix(posThis, posNext, interpolationAlpha) : posThis;
     vec4 quaternion = computeRigidQuaternion(textures, interpolationAlpha);
-    vec3 restFramePosition = vec3(uv2.x, uv3.x, uv3.y);
-    vec3 rotatedPivot = rotateVectorByQuaternion(position - restFramePosition, quaternion);
+    vec3 rotatedPivot = rotateVectorByQuaternion(position - vatPivot, quaternion);
     
     Vat3_PScaleData pScaleData = computePScaleData(textures.posThisFrame, textures.posNextFrame, u_boundMax, u_noLerping, true);
     float originalPScale = shouldInterpolate ? mix(pScaleData.pScaleThisFrame, pScaleData.pScaleNextFrame, interpolationAlpha) : pScaleData.pScaleThisFrame;
@@ -798,10 +796,8 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vec4 legRotThis = vatLoad(u_vatRotTex, legSampleUv);
     vec4 legColThis = vatLoad(u_vatColTex, legSampleUv);
 
-    // Pivot stored in uv2 and uv3 (FBX UV channels 2 & 3)
-    // Reference mapping: pivot = vec3(uv3.x, uv4.x, 1.0 - uv4.y)
-    //   In Three.js FBXLoader: uv3(ref) = uv2(three), uv4(ref) = uv3(three)
-    vec3 legPivot = vec3(uv2.x, uv3.x, 1.0 - uv3.y);
+    // Pivot stored in vatPivot
+    vec3 legPivot = vec3(vatPivot.x, vatPivot.y, 1.0 - vatPivot.z);
     vec3 legAtOrigin = position - legPivot;
 
     // Quaternion: maxComponent encoded in pos.w
@@ -882,12 +878,12 @@ export class VATEffect {
 
     if (this.isInstanced && this.mesh.geometry) {
       const maxCount = this.mesh.instanceMatrix ? this.mesh.instanceMatrix.count : (this.mesh.count || 1);
-      const timeOffsets = new Float32Array(maxCount);
-      const speedScales = new Float32Array(maxCount);
-      speedScales.fill(1.0);
+      const params = new Float32Array(maxCount * 2);
+      for (let i = 0; i < maxCount; i++) {
+        params[i * 2 + 1] = 1.0; // Default speed scale to 1.0
+      }
 
-      this.mesh.geometry.setAttribute('vatInstanceTimeOffset', new THREE.InstancedBufferAttribute(timeOffsets, 1));
-      this.mesh.geometry.setAttribute('vatInstanceSpeedScale', new THREE.InstancedBufferAttribute(speedScales, 1));
+      this.mesh.geometry.setAttribute('vatInstanceParams', new THREE.InstancedBufferAttribute(params, 2));
     }
 
     this._speed = 1.0;
@@ -999,7 +995,7 @@ export class VATEffect {
 
   setInstanceTimeOffset(index, offset) {
     if (!this.isInstanced) return;
-    const attr = this.mesh.geometry.getAttribute('vatInstanceTimeOffset');
+    const attr = this.mesh.geometry.getAttribute('vatInstanceParams');
     if (attr) {
       attr.setX(index, offset);
       attr.needsUpdate = true;
@@ -1008,9 +1004,9 @@ export class VATEffect {
 
   setInstanceSpeedScale(index, scale) {
     if (!this.isInstanced) return;
-    const attr = this.mesh.geometry.getAttribute('vatInstanceSpeedScale');
+    const attr = this.mesh.geometry.getAttribute('vatInstanceParams');
     if (attr) {
-      attr.setX(index, scale);
+      attr.setY(index, scale);
       attr.needsUpdate = true;
     }
   }
@@ -1058,7 +1054,11 @@ export class VATEffect {
         clonedMat.depthWrite = true;
       }
 
-      clonedMat.vertexColors = true; // Always enable vertex colors
+      // vertexColors must be false: VAT meshes have no geometry 'color' attribute.
+      // Three.js would read vec3(0) and darken everything to black.
+      // Instead we manually define USE_COLOR so the vColor varying is declared,
+      // and our onBeforeCompile replacement sets it from the VAT color texture.
+      clonedMat.vertexColors = false;
 
       // Force UV and COLOR defines to ensure standard varyings/attributes are declared
       clonedMat.defines = clonedMat.defines || {};
@@ -1078,7 +1078,8 @@ export class VATEffect {
       }
 
       clonedMat.customProgramCacheKey = () => {
-        return `vat-${variantId}`;
+        const instKey = this.isInstanced ? '-inst' : '';
+        return `vat-${variantId}${instKey}`;
       };
 
       clonedMat.onBeforeCompile = (shader) => {
@@ -1099,16 +1100,14 @@ export class VATEffect {
           declarations += 'attribute vec2 vatUv1;\n';
         }
         if (needsUv2And3) {
-          declarations += 'attribute vec2 vatUv2;\n';
-          declarations += 'attribute vec2 vatUv3;\n';
+          declarations += 'attribute vec3 vatPivot;\n';
         }
 
         let instancedDeclarations = '';
         if (this.isInstanced) {
           instancedDeclarations = `
-attribute float vatInstanceTimeOffset;
-attribute float vatInstanceSpeedScale;
-#define VAT_ACTIVE_TIME ((u_inputTime + vatInstanceTimeOffset) * vatInstanceSpeedScale)
+attribute vec2 vatInstanceParams;
+#define VAT_ACTIVE_TIME ((u_inputTime + vatInstanceParams.x) * vatInstanceParams.y)
 \n`;
         }
 
@@ -1119,16 +1118,12 @@ attribute float vatInstanceSpeedScale;
 
         // Replace void main() to compute vatOut immediately at entry point
         const uv1Arg = needsUv1 ? 'vatUv1' : 'vec2(0.0)';
-        const uv2Arg = needsUv2And3 ? 'vatUv2' : 'vec2(0.0)';
-        const uv3Arg = needsUv2And3 ? 'vatUv3' : 'vec2(0.0)';
+        const vatPivotArg = needsUv2And3 ? 'vatPivot' : 'vec3(0.0)';
 
         vertex = vertex.replace('void main() {', `
         void main() {
-          Vat3_Outputs vatOut = applyVatDeformation(position, normal, vec3(0.0), uv, ${uv1Arg}, ${uv2Arg}, ${uv3Arg}, ${variantId});
+          Vat3_Outputs vatOut = applyVatDeformation(position, normal, vec3(0.0), uv, ${uv1Arg}, ${vatPivotArg}, ${variantId});
         `);
-
-
-
 
 
         // Replace normal computation
@@ -1148,13 +1143,21 @@ attribute float vatInstanceSpeedScale;
         `;
         vertex = vertex.replace(beginVertexInclude, customVertexCode);
 
-        // Inject color mapping in vertex shader if color attribute is present
         const colorVertexInclude = '#include <color_vertex>';
-        const customColorCode = `
+        // Replace Three.js's default color_vertex include.
+        // We output VAT texture color, then apply instanceColor tint on top.
+        // NOTE: We must re-include the USE_INSTANCING_COLOR block that Three.js
+        // normally puts inside color_vertex — our replacement must preserve it.
+        let customColorCode = `
         #if defined( USE_COLOR_ALPHA )
           vColor = vatOut.outColorAndAlpha;
         #elif defined( USE_COLOR )
-          vColor = vatOut.outColorAndAlpha;//.rgb;
+          vColor = vatOut.outColorAndAlpha;
+        #else
+          vColor = vec4(1.0);
+        #endif
+        #ifdef USE_INSTANCING_COLOR
+          vColor.xyz *= instanceColor.xyz;
         #endif
         `;
         vertex = vertex.replace(colorVertexInclude, customColorCode);
