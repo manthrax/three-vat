@@ -1,0 +1,382 @@
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+
+// Raw PNG decoding logic utilizing browser DecompressionStream for exact pixel data
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const RGBA_BYTES_PER_PIXEL = 4;
+
+async function inflate(data) {
+  const stream = new Response(data).body.pipeThrough(
+    new DecompressionStream('deflate')
+  );
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function concatChunks(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+function paethPredictor(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+function unfilterScanline(filterType, row, prevRow, out) {
+  for (let i = 0; i < row.length; i++) {
+    const a = i >= RGBA_BYTES_PER_PIXEL ? out[i - RGBA_BYTES_PER_PIXEL] : 0;
+    const b = prevRow[i];
+    const c = i >= RGBA_BYTES_PER_PIXEL ? prevRow[i - RGBA_BYTES_PER_PIXEL] : 0;
+    const x = row[i];
+
+    let value;
+    switch (filterType) {
+      case 0: // None
+        value = x;
+        break;
+      case 1: // Sub
+        value = x + a;
+        break;
+      case 2: // Up
+        value = x + b;
+        break;
+      case 3: // Average
+        value = x + Math.floor((a + b) / 2);
+        break;
+      case 4: // Paeth
+        value = x + paethPredictor(a, b, c);
+        break;
+      default:
+        throw new Error(`decodePngRgba8: unsupported filter type ${filterType}`);
+    }
+    out[i] = value & 0xff;
+  }
+}
+
+async function decodePngRgba8(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  for (let i = 0; i < PNG_SIGNATURE.length; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) {
+      throw new Error('decodePngRgba8: not a valid PNG file');
+    }
+  }
+
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+
+  let offset = PNG_SIGNATURE.length;
+  while (offset < bytes.length) {
+    const length = view.getUint32(offset, false);
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+    const dataStart = offset + 8;
+
+    if (type === 'IHDR') {
+      width = view.getUint32(dataStart, false);
+      height = view.getUint32(dataStart + 4, false);
+      bitDepth = bytes[dataStart + 8];
+      colorType = bytes[dataStart + 9];
+    } else if (type === 'IDAT') {
+      idatChunks.push(bytes.subarray(dataStart, dataStart + length));
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset = dataStart + length + 4;
+  }
+
+  if (bitDepth !== 8 || colorType !== 6) {
+    throw new Error(`decodePngRgba8: unsupported format (bitDepth=${bitDepth}, colorType=${colorType})`);
+  }
+
+  const raw = await inflate(concatChunks(idatChunks));
+  const stride = width * RGBA_BYTES_PER_PIXEL;
+  const data = new Uint8Array(width * height * RGBA_BYTES_PER_PIXEL);
+
+  let prevRow = new Uint8Array(stride);
+  let rawOffset = 0;
+  for (let y = 0; y < height; y++) {
+    const filterType = raw[rawOffset];
+    rawOffset += 1;
+    const row = raw.subarray(rawOffset, rawOffset + stride);
+    rawOffset += stride;
+
+    const outRow = data.subarray(y * stride, (y + 1) * stride);
+    unfilterScanline(filterType, row, prevRow, outRow);
+    prevRow = outRow;
+  }
+
+  return { data, width, height };
+}
+
+async function loadRawPngTexture(filePath) {
+  const response = await fetch(filePath);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch PNG from ${filePath}: ${response.statusText}`);
+  }
+  const { data, width, height } = await decodePngRgba8(await response.arrayBuffer());
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.flipY = false;
+  texture.generateMipmaps = false;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// Default 1x1 textures to bind when a texture isn't present
+let defaultTexture = null;
+function getDefaultTexture() {
+  if (!defaultTexture) {
+    const data = new Uint8Array([204, 204, 204, 255]); // grey
+    defaultTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+    defaultTexture.needsUpdate = true;
+  }
+  return defaultTexture;
+}
+
+export class VATLoader {
+  static async load(rootPath, assetName) {
+    if (!rootPath.endsWith('/')) {
+      rootPath += '/';
+    }
+
+    // 1. Fetch metadata JSON
+    const metadataUrl = `${rootPath}${assetName}/${assetName}_data.json`;
+    const metadataResponse = await fetch(metadataUrl);
+    if (!metadataResponse.ok) {
+      throw new Error(`VATLoader: failed to load metadata: ${metadataResponse.statusText}`);
+    }
+    const metadataArray = await metadataResponse.json();
+    const metadata = Object.assign({}, metadataArray[0]);
+
+    // Process metadata
+    const typeStr = metadata['VAT Type'];
+    if (!typeStr) throw new Error('VAT Type is required in metadata');
+    // Normalize type string
+    const type = typeStr.charAt(0).toUpperCase() + typeStr.slice(1).toLowerCase(); // e.g. "softbody" -> "Softbody"
+
+    const name = metadata['Name'] || assetName;
+    // Standard defaults
+    const defaults = {
+      additionalObjectSpaceOffset: new THREE.Vector3(0, 0, 0),
+      additionalParticleScaleUniformMultiplier: 1.0,
+      animateFirstFrame: false,
+      boundMin: new THREE.Vector3(0, 0, 0),
+      boundMax: new THREE.Vector3(1, 1, 1),
+      computeSpinfromHeadingVector: false,
+      displayFrame: 0,
+      enablePlayback: true,
+      frameCount: 1,
+      frameRate: 30,
+      gameTimeAtFirstFrame: 0,
+      globalParticlePiecesScaleMultiplier: 1,
+      hideParticlesOverlappingObjectOrigin: true,
+      inputTime: 0,
+      instance: false,
+      instanceCount: 0,
+      instanceUpdateDynamicData: false,
+      interframeInterpolation: false,
+      interpolateColor: true,
+      interpolateSpareColor: true,
+      isColorTexHdr: true,
+      isLookupTexHdr: false,
+      isTexHdr: false,
+      noLerping: false,
+      originEffectiveRadius: 1,
+      particleHeightBaseScale: 0.5,
+      particlePiecesScaleAreInPositionAlpha: false,
+      particleShardCount: 0,
+      particleShardIndex: 0,
+      particleShards: false,
+      particleSpinPhase: 0,
+      particleTextureUScale: 1,
+      particleTextureVScale: 1,
+      particleWidthBaseScale: 0.5,
+      perParticleRandomSpinSpeed: 0,
+      perParticleRandomVelocityScale: 0,
+      playbackSpeed: 1.0,
+      scalebyVelocityAmount: 0,
+      spinFromHeading: false,
+      stretchByVelocity: false,//true,
+      stretchByVelocityAmount: 1.0,
+      supportSurfaceNormalMaps: true,
+      surfaceNormals: true,
+      surfaceUVsfromColorRG: false,
+      useAlphaForVelocityScale: false,
+      useColorForVelocity: false,
+      useCompressedNormals: true,
+      useLookup: false,
+      useParticleBillboarding: true,
+      useParticleVelocitySpin: false,
+      usePos2: false,
+      useRightHandedCoordinates: true,
+      useSpareColor: false,
+      vertexCount: 0
+    };
+
+    // Variant overrides
+    if (type === 'Dynamicmesh') {
+      defaults.useLookup = true;
+      defaults.noLerping = true;
+      defaults.supportSurfaceNormalMaps = true;
+      defaults.surfaceNormals = true;
+      defaults.useCompressedNormals = false;
+    } else if (type === 'Softbody') {
+      defaults.useCompressedNormals = Boolean(metadata['Use HDR Textures']);
+    }
+
+    // Merge metadata
+    const overrides = Object.assign({}, defaults, {
+      useRightHandedCoordinates: metadata['Axis System'] === 'Right-Handed Y-Up',
+      boundMin: new THREE.Vector3(metadata['Bound Min X'] !== undefined ? metadata['Bound Min X'] : 0, metadata['Bound Min Y'] !== undefined ? metadata['Bound Min Y'] : 0, metadata['Bound Min Z'] !== undefined ? metadata['Bound Min Z'] : 0),
+      boundMax: new THREE.Vector3(metadata['Bound Max X'] !== undefined ? metadata['Bound Max X'] : 1, metadata['Bound Max Y'] !== undefined ? metadata['Bound Max Y'] : 1, metadata['Bound Max Z'] !== undefined ? metadata['Bound Max Z'] : 1),
+      frameCount: metadata['Frame Count'] || 1,
+      frameRate: metadata['Houdini FPS'] || 30,
+      particleShardCount: metadata['Particle Shard Count'] || 0,
+      useSpareColor: Boolean(metadata['Spare Color Texture']),
+      usePos2: Boolean(metadata['Two Position Textures']),
+      isTexHdr: Boolean(metadata['Use HDR Textures']),
+      vertexCount: metadata['Vertex Count'] || 0,
+      isColorTexHdr: Boolean(metadata['Use HDR Textures']),
+      legacy: Boolean(metadata['Legacy Format'])
+    });
+
+    // 2. Load Mesh
+    let mesh = null;
+    let meshContainer = null;
+    if (assetName.startsWith('demo_')) {
+      const fbxLoader = new FBXLoader();
+      const fbxUrl = `${rootPath}${assetName}/${assetName.replace('demo_', '')}_mesh.fbx`;
+      const fbx = await fbxLoader.loadAsync(fbxUrl);
+      meshContainer = fbx;
+      fbx.traverse((node) => {
+        if (!mesh && node.isMesh) {
+          mesh = node;
+        }
+      });
+      if (!mesh) {
+        throw new Error(`VATLoader: no mesh found in FBX: ${fbxUrl}`);
+      }
+    } else {
+      const gltfLoader = new GLTFLoader();
+      const gltfUrl = `${rootPath}${assetName}/${assetName}_mesh.glb`;
+      const gltf = await gltfLoader.loadAsync(gltfUrl);
+      meshContainer = gltf.scene;
+      gltf.scene.traverse((node) => {
+        if (!mesh && node.isMesh) {
+          mesh = node;
+        }
+      });
+      if (!mesh) {
+        throw new Error(`VATLoader: no mesh found in GLB: ${gltfUrl}`);
+      }
+    }
+    mesh.visible = false;
+
+    // Rename attributes to vatUv1, vatUv2, vatUv3 to bypass standard Three.js UV naming shifts/collisions
+    if (mesh.geometry.attributes.uv1) {
+      mesh.geometry.setAttribute('vatUv1', mesh.geometry.attributes.uv1);
+      mesh.geometry.deleteAttribute('uv1');
+    }
+    if (mesh.geometry.attributes.uv2) {
+      mesh.geometry.setAttribute('vatUv2', mesh.geometry.attributes.uv2);
+      mesh.geometry.deleteAttribute('uv2');
+    }
+    if (mesh.geometry.attributes.uv3) {
+      mesh.geometry.setAttribute('vatUv3', mesh.geometry.attributes.uv3);
+      mesh.geometry.deleteAttribute('uv3');
+    }
+
+    // 3. Load Textures
+    const textureKeys = ['vatColTex', 'vatLookupTex', 'vatPos2Tex', 'vatPosTex', 'vatRotTex', 'vatSpareColTex'];
+    const suffixMapping = {
+      vatColTex: '_col',
+      vatLookupTex: '_lookup',
+      vatPos2Tex: '_pos2',
+      vatPosTex: '_pos',
+      vatRotTex: '_rot',
+      vatSpareColTex: '_col2'
+    };
+
+    const textures = {};
+    const loader = new THREE.TextureLoader();
+    const exrLoader = new EXRLoader();
+
+    for (const key of textureKeys) {
+      const isRequired =
+        key === 'vatPosTex' ||
+        (key === 'vatColTex') ||
+        (key === 'vatRotTex' && type !== 'Particles') ||
+        (key === 'vatLookupTex' && type === 'Dynamicmesh') ||
+        (key === 'vatPos2Tex' && overrides.usePos2) ||
+        (key === 'vatSpareColTex' && overrides.useSpareColor);
+
+      if (isRequired) {
+        const isColor = key === 'vatColTex' || key === 'vatSpareColTex';
+        const isLookup = key === 'vatLookupTex';
+        const useHdr = overrides.isTexHdr && !isLookup;
+        const format = useHdr ? 'exr' : 'png';
+        const suffix = suffixMapping[key];
+        const baseName = assetName.startsWith('demo_') ? assetName.replace('demo_', '') : assetName;
+        const path = `${rootPath}${assetName}/${baseName}${suffix}.${format}`;
+
+        try {
+          let texture;
+          if (key === 'vatLookupTex' && format === 'png') {
+            texture = await loadRawPngTexture(path);
+          } else {
+            texture = format === 'exr'
+              ? await exrLoader.loadAsync(path)
+              : await loader.loadAsync(path);
+
+            if (isColor) {
+              texture.colorSpace = format === 'exr' ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+            } else {
+              texture.colorSpace = THREE.NoColorSpace;
+            }
+            texture.flipY = false;
+            texture.generateMipmaps = false;
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            texture.needsUpdate = true;
+          }
+          textures[key] = texture;
+        } catch (err) {
+          console.warn(`VATLoader: failed to load texture ${path}, using dummy.`, err);
+          textures[key] = getDefaultTexture();
+        }
+      } else {
+        textures[key] = getDefaultTexture();
+      }
+    }
+
+    return {
+      name,
+      type,
+      mesh,
+      scene: meshContainer,
+      textures,
+      vatConfig: {
+        staticInputs: overrides
+      }
+    };
+  }
+}

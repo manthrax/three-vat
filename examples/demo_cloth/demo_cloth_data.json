@@ -1,0 +1,20 @@
+[
+    {
+        "Axis System": "Right-Handed Y-Up",
+        "Bound Max X": 1.0,
+        "Bound Max Y": 1.0,
+        "Bound Max Z": 1.0,
+        "Bound Min X": 0.0,
+        "Bound Min Y": 0.0,
+        "Bound Min Z": 0.0,
+        "Frame Count": 100,
+        "Houdini FPS": 24.0,
+        "Name": "demo_cloth",
+        "Spare Color Texture": 0,
+        "Two Position Textures": 0,
+        "Use HDR Textures": 1,
+        "VAT Type": "Softbody",
+        "Vertex Count": 0,
+        "Legacy Format": true
+    }
+]

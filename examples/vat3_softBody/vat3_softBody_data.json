@@ -1,0 +1,19 @@
+[
+    {
+        "Axis System": "Right-Handed Y-Up",
+        "Bound Max X": 1.2000000476837158,
+        "Bound Max Y": 1.5,
+        "Bound Max Z": 0.30000001192092896,
+        "Bound Min X": -0.10000000149011612,
+        "Bound Min Y": 0.2990000247955322,
+        "Bound Min Z": -0.30000001192092896,
+        "Frame Count": 120,
+        "Houdini FPS": 30.0,
+        "Name": "vat3_softBody",
+        "Spare Color Texture": 0,
+        "Two Position Textures": 0,
+        "Use HDR Textures": 0,
+        "VAT Type": "Softbody",
+        "Vertex Count": 8
+    }
+]

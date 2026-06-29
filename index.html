@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGL2 Houdini VAT2 & VAT3 - Demo</title>
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0d0e15 0%, #151828 100%);
+      --accent-color: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.4);
+      --panel-bg: rgba(20, 22, 37, 0.6);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text-color: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body,
+    html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-color);
+    }
+
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+
+    /* UI Overlay */
+    .overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 24px;
+    }
+
+    .interactive {
+      pointer-events: auto;
+    }
+
+    /* Glassmorphic Panel */
+    .glass-panel {
+      background: var(--panel-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      padding: 4px;
+      box-shadow: 0 4px 4px 0 rgba(0, 0, 0, 0.37);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .header-panel {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(to right, #ffffff, #9ca3af);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    h1 span {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      background: var(--accent-color);
+      -webkit-background-clip: initial;
+      -webkit-text-fill-color: initial;
+      color: #fff;
+      padding: 2px 6px;
+      border-radius: 4px;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    /* Bottom Control Panel */
+    .controls-panel {
+      width: 450px;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 20px;
+      align-self: center;
+      margin-bottom: 8px;
+    }
+
+    .toggle-panel {
+      position: absolute;
+      top: 100px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      width: 170px;
+      border-radius: 4px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+    }
+
+    label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    input[type="range"],
+    button {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      color: var(--text-color);
+      padding: 10px 14px;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    button {
+      background: var(--accent-color);
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
+
+    button:hover {
+      background: #4f46e5;
+      transform: translateY(-1px);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    /* Playback controls row */
+    .playback-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .speed-display {
+      text-align: right;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Range slider customizations */
+    input[type="range"] {
+      -webkit-appearance: none;
+      padding: 0;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent-color);
+      box-shadow: 0 0 6px var(--accent-glow);
+      transition: transform 0.1s;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+
+    /* Loading overlay */
+    #loader {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(13, 14, 21, 0.85);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      transition: opacity 0.5s ease;
+      backdrop-filter: blur(8px);
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid rgba(255, 255, 255, 0.1);
+      border-left-color: var(--accent-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    #loading-text {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    /* Floating labels above 3D models */
+    .floating-label {
+      position: absolute;
+      z-index: 5;
+      transform: translate(-50%, -100%);
+      background: rgba(10, 11, 20, 0.85);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      white-space: nowrap;
+      transition: opacity 0.1s ease;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+
+  <!-- Import Map for Modern ES Modules -->
+  <!--script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.185.0/build/three.module.js",
+        "three/examples/jsm/": "https://unpkg.com/three@0.185.0/examples/jsm/"
+      }
+    }
+  </script-->
+</head>
+
+<body>
+  <div id="loader">
+    <div class="spinner"></div>
+    <div id="loading-text">Loading Houdini VAT Assets...</div>
+  </div>
+
+  <div id="canvas-container"></div>
+
+  <!-- Floating Labels Container -->
+  <div id="labels-container"
+    style="position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; z-index: 5;"></div>
+
+  <div class="overlay">
+    <!-- Header -->
+    <div class="glass-panel header-panel interactive">
+      <h1>THREEJS Houdini VAT3<span>VAT3 for WebGLRenderer WebGL2</span></h1>
+      <div style="font-size: 12px; color: var(--text-muted)">Softbody &bull; Particles &bull; Rigidbody &bull;
+        DynamicMesh &bull; Cloth &bull; Fluid</div>
+    </div>
+
+    <!-- Toggle Panel (Right side) -->
+    <div class="glass-panel toggle-panel interactive" id="toggle-panel">
+      <div
+        style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 4px;">
+        Toggle Demos</div>
+    </div>
+
+    <!-- Controls Panel (Centered at bottom) -->
+    <div class="glass-panel controls-panel interactive">
+      <!-- Play/Pause & Reset -->
+      <div class="control-group">
+        <label>Playback</label>
+        <div class="playback-row">
+          <button id="play-btn">Pause</button>
+          <button id="reset-btn" style="background: rgba(255,255,255,0.08); box-shadow: none;">Reset</button>
+        </div>
+      </div>
+
+      <!-- Playback Speed with very fine granularity -->
+      <div class="control-group">
+        <div style="display: flex; justify-content: space-between;">
+          <label for="speed-range">Speed</label>
+          <span class="speed-display" id="speed-val">1.000x</span>
+        </div>
+        <input type="range" id="speed-range" min="0" max="2.0" step="0.005" value="1">
+      </div>
+
+      <!-- Helpers Toggle -->
+      <div class="control-group" style="align-items: center; justify-content: center; max-width: 80px;">
+        <label for="grid-toggle" style="cursor: pointer; margin-bottom: 4px;">Grid</label>
+        <input type="checkbox" id="grid-toggle" checked
+          style="width: 20px; height: 20px; cursor: pointer; accent-color: var(--accent-color);">
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import { VATLoader } from './VATLoader.js';
+    import { VATEffect } from './VATEffect.js';
+
+    let container, scene, camera, renderer, controls;
+    let vats = [];
+    let gridHelper;
+    let clock = new THREE.Timer();
+    clock.connect(document);
+    let isPlaying = true;
+    let playSpeed = 1.0;
+
+    const loaderEl = document.getElementById('loader');
+    const loadingTextEl = document.getElementById('loading-text');
+    const labelsContainer = document.getElementById('labels-container');
+
+    const config = [
+      { name: 'demo_cloth', label: 'Demo Cloth', posX: -12.0, posY: 1 },
+      { name: 'vat3_softBody', label: 'Softbody', posX: -8. },
+      { name: 'demo_fluid', label: 'Demo Fluid', posX: -4.0, posY: 1 },
+      { name: 'vat3_dynamicMesh', label: 'Dynamic Mesh', posX: 0., posY: .5 },
+      { name: 'vat3_particles', label: 'Particles', posX: 4., posY: 1 },
+      { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 8. },
+      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 12.0 }
+    ];
+
+    async function init() {
+      // Container
+      container = document.getElementById('canvas-container');
+
+      // Scene
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x07080e);
+      scene.fog = new THREE.FogExp2(0x07080e, 0.02);
+
+      // Camera
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(0, 5, 17);
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFShadowMap;
+      container.appendChild(renderer.domElement);
+
+      // Controls
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2 + 0.1;
+      controls.target.set(0, 0, 0);
+
+      // Lighting
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+      scene.add(ambientLight);
+
+      const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x111322, 0.8);
+      hemisphereLight.position.set(0, 20, 0);
+      scene.add(hemisphereLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      dirLight.position.set(5, 15, 8);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.bias = -0.001;
+      scene.add(dirLight);
+
+      let css2threecolor = (cssv) => new THREE.Color(cssv.slice(0, -2))
+      // Floor grid helper
+
+      gridHelper = new THREE.GridHelper(40, 40, `#1b2236`, '#1c1e10');
+      //gridHelper.position.y = -1.0;
+      scene.add(gridHelper);
+
+      // UI Listeners
+      const playBtn = document.getElementById('play-btn');
+      playBtn.addEventListener('click', () => {
+        isPlaying = !isPlaying;
+        playBtn.innerText = isPlaying ? 'Pause' : 'Play';
+        vats.forEach(item => item.vat.setEnabled(isPlaying));
+      });
+
+      document.getElementById('reset-btn').addEventListener('click', () => {
+        clock = new THREE.Timer();
+        clock.connect(document)
+        vats.forEach(item => {
+          item.vat.time = 0;
+        });
+      });
+
+      const speedRange = document.getElementById('speed-range');
+      const speedVal = document.getElementById('speed-val');
+      speedRange.addEventListener('input', (e) => {
+        playSpeed = parseFloat(e.target.value);
+        speedVal.innerText = playSpeed.toFixed(3) + 'x';
+
+        vats.forEach(item => {
+          item.vat.speed = playSpeed;
+        });
+      });
+
+      document.getElementById('grid-toggle').addEventListener('change', (e) => {
+        gridHelper.visible = e.target.checked;
+      });
+
+      // Window resize
+      window.addEventListener('resize', onWindowResize);
+
+      // Load all simulations in parallel
+      await loadAllVats();
+
+      // Start loop
+      renderer.setAnimationLoop(animate);
+    }
+
+    async function loadAllVats() {
+      loaderEl.style.opacity = '1';
+      loaderEl.style.pointerEvents = 'auto';
+
+      const loadPromises = config.map(async (cfg) => {
+        loadingTextEl.innerText = `Loading ${cfg.label}...`;
+        try {
+          const assets = await VATLoader.load('examples/', cfg.name);
+          //console.log(cfg.label, "mesh attributes:", Object.keys(assets.mesh.geometry.attributes));
+
+          let options = { camera };
+          if (cfg.name === 'vat3_particles') {
+            // Particles uses its specific albedo png
+            const textureUrl = 'examples/vat3_particles/vat3_particles_col.png';
+            options.albedoTexture = await new THREE.TextureLoader().loadAsync(textureUrl);
+          }
+
+          if (cfg.name === 'vat3_softBody') {
+            // Softbody flag uses its specific flag texture
+            const textureUrl = 'examples/vat3_softbody/flag_banner_red.jpg';
+            options.albedoTexture = await new THREE.TextureLoader().loadAsync(textureUrl);
+          }
+          if (cfg.name === 'demo_fluid') {
+            assets.mesh.material = new THREE.MeshPhysicalMaterial({
+              color: 0xff0000, // lightblue
+              roughness: 0.2,
+              metalness: 0.1,
+            });
+          }
+
+          if (cfg.name === 'demo_rigid_body') {
+            assets.mesh.material = new THREE.MeshStandardMaterial();
+          }
+
+          //https://playground.babylonjs.com/#XKW2C5
+
+          const vat = new VATEffect(assets, options);
+          vat.speed = playSpeed;
+          vat.setEnabled(isPlaying);
+
+          // Place in row
+          if (cfg.posX) vat.mesh.position.x = cfg.posX;
+          if (cfg.posY) vat.mesh.position.y = cfg.posY;
+          if (cfg.name === 'vat3_particles') {
+            // Offset particles slightly down to match grid alignment
+            vat.mesh.scale.multiplyScalar(.1)
+          }
+          let effectContainer = new THREE.Object3D();
+          effectContainer.add(vat.mesh);
+          scene.add(effectContainer)
+          // Add HTML floating label element
+          const labelDiv = document.createElement('div');
+          labelDiv.className = 'floating-label';
+          labelDiv.innerText = cfg.label;
+          labelsContainer.appendChild(labelDiv);
+
+          vats.push({
+            name: cfg.name,
+            vat,
+            labelEl: labelDiv,
+            posX: cfg.posX
+          });
+        } catch (err) {
+          console.error(`Error loading ${cfg.label}:`, err);
+        }
+      });
+
+      await Promise.all(loadPromises);
+
+      // Populate demo checkboxes
+      const togglePanel = document.getElementById('toggle-panel');
+      config.forEach((cfg) => {
+        const itemRow = document.createElement('div');
+        itemRow.style.display = 'flex';
+        itemRow.style.alignItems = 'center';
+        itemRow.style.gap = '8px';
+        itemRow.style.fontSize = '12px';
+        itemRow.style.cursor = 'pointer';
+        itemRow.style.margin = '4px 0';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.id = `toggle-${cfg.name}`;
+        checkbox.style.cursor = 'pointer';
+        checkbox.style.accentColor = 'var(--accent-color)';
+
+        const label = document.createElement('label');
+        label.htmlFor = checkbox.id;
+        label.innerText = cfg.label;
+        label.style.cursor = 'pointer';
+        label.style.textTransform = 'none';
+        label.style.letterSpacing = 'normal';
+
+        itemRow.appendChild(checkbox);
+        itemRow.appendChild(label);
+        togglePanel.appendChild(itemRow);
+
+        checkbox.addEventListener('change', (e) => {
+          const item = vats.find(v => v.name === cfg.name);
+          if (item) {
+            item.vat.mesh.visible = e.target.checked;
+            if (item.labelEl) {
+              item.labelEl.style.display = e.target.checked ? 'block' : 'none';
+            }
+          }
+        });
+      });
+
+      // Fade out loader
+      loaderEl.style.opacity = '0';
+      loaderEl.style.pointerEvents = 'none';
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    const tempV = new THREE.Vector3();
+    function updateFloatingLabels() {
+      vats.forEach(item => {
+        // Project 3D coordinate of the label below the mesh
+        tempV.set(item.posX, -1.8, 0);
+        tempV.project(camera);
+        if (!item.labelEl) return;
+        // Check if behind camera
+        if (tempV.z > 1) {
+          item.labelEl.style.opacity = 0;
+          return;
+        }
+
+        const px = (tempV.x * 0.5 + 0.5) * window.innerWidth;
+        const py = (tempV.y * -0.5 + 0.5) * window.innerHeight;
+
+        item.labelEl.style.opacity = 1;
+        item.labelEl.style.transform = `translate(-50%, -100%) translate(${px}px, ${py}px)`;
+      });
+    }
+
+    function animate(timeMSec) {
+      if (currentVatLoaded()) {
+        clock.update(timeMSec)
+        const time = clock.getElapsed();
+        vats.forEach(item => {
+          if (isPlaying) {
+            item.vat.update(time);
+          } else {
+            item.vat.update(item.vat.time);
+          }
+        });
+      }
+
+      controls.update();
+      updateFloatingLabels();
+      renderer.render(scene, camera);
+    }
+
+    function currentVatLoaded() {
+      return vats.length > 0;
+    }
+
+    init();
+  </script>
+</body>
+
+</html>
