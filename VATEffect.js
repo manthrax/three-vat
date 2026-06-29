@@ -29,6 +29,8 @@ uniform float u_additionalParticleScaleUniformMultiplier;
 uniform bool u_animateFirstFrame;
 uniform vec3 u_boundMax;
 uniform vec3 u_boundMin;
+uniform vec3 u_pivotMax;
+uniform vec3 u_pivotMin;
 uniform bool u_computeSpinfromHeadingVector;
 uniform float u_displayFrame;
 uniform float u_frameCount;
@@ -719,9 +721,11 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     Vat3_ParticleDirection particleDirs = calculateParticleOrientation(velocityData);
     Vat3_ParticleScale pScale = computeParticleScale(pScaleData, particleEnabledThisFrame, particleEnabledNextFrame, interpolationAlpha);
     
+    vec3 particleCenterPos = u_interframeInterpolation ? mix(posThis, posNext, interpolationAlpha) : posThis;
+    
     vec3 particleRelRightPos = particleDirs.particleRightDir * u_particleWidthBaseScale * pScale.finalScale * (uv.x - 0.5);
     vec3 particleRelUpPos    = particleDirs.particleUpDir * u_particleHeightBaseScale * pScale.finalScale * (uv.y - 0.5);
-    vec3 particleFinalPos    = particleRelRightPos + particleRelUpPos + posThis;
+    vec3 particleFinalPos    = particleRelRightPos + particleRelUpPos + particleCenterPos;
     
     vec3 finalPos = particleFinalPos + u_additionalObjectSpaceOffset;
     
@@ -748,30 +752,53 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
   // Key differences: additive positions (softbody), different UV channels, V-axis always flipped.
 
   else if (variant == 4) { // Legacy Softbody (demo_cloth)
-    // Frame/time calculation: old format uses discrete frame stepping
+    // Frame/time calculation: old format uses discrete frame stepping or smooth interpolation
     float legFrameCount = u_frameCount;
-    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
-    float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
-
-    // Reference softVertexShader:
-    //   vec4 texturePos = texture(posTexture,vec2(uv2.x, 1.0 - timeInFrames - (1.0 - uv2.y)));
-    //   vec4 textureCd = texture(colTexture,vec2(uv2.x, 1.0 - timeInFrames ));
-    //   vec4 textureRot = texture(rotTexture,vec2(uv2.x, 1.0 - timeInFrames - (1.0 - uv2.y)));
-    // Note: uv2 in reference shader corresponds to Three.js uv1 (second UV channel).
+    float legTime = VAT_ACTIVE_TIME * u_playbackSpeed;
+    float loopedAnimFrame = fract((u_frameRate / (legFrameCount - 0.01)) * legTime) * legFrameCount;
+    float legFrame = floor(loopedAnimFrame);
+    float legFrameNext = floor(loopedAnimFrame + 1.0);
     
+    float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
+    float legTimeInFramesNext = mod(legFrameNext, legFrameCount) * (1.0 / legFrameCount);
+
     vec2 legSampleUv = vec2(uv1.x, 1.0 - legTimeInFrames - (1.0 - uv1.y));
+    vec2 legSampleUvNext = vec2(uv1.x, 1.0 - legTimeInFramesNext - (1.0 - uv1.y));
     vec2 legColUv = vec2(uv1.x, 1.0 - legTimeInFrames);
 
     vec4 legPosThis = vatLoad(u_vatPosTex, legSampleUv);
+    vec4 legPosNext = vatLoad(u_vatPosTex, legSampleUvNext);
     vec4 legRotThis = vatLoad(u_vatRotTex, legSampleUv);
+    vec4 legRotNext = vatLoad(u_vatRotTex, legSampleUvNext);
     vec4 legColThis = vatLoad(u_vatColTex, legColUv);
 
-    // Softbody: position is additive offset from rest mesh position
-    vec3 legFinalPos = position + legPosThis.xyz;
+    float interpAlpha = u_interframeInterpolation ? fract(loopedAnimFrame) : 0.0;
 
-    // Normal decode: quaternion-style cross product against world up
-    vec3 legUp = vec3(0.0, 1.0, 0.0);
-    vec3 legNormal = normalize((cross(legRotThis.xyz, cross(legRotThis.xyz, legUp) + (legRotThis.a * legUp)) * 2.0) + legUp);
+    // Interpolate positions
+    vec4 legPosVal = mix(legPosThis, legPosNext, interpAlpha);
+    // Interpolate rotations/normals (NLERP)
+    vec4 legRotVal = normalize(mix(legRotThis, legRotNext, interpAlpha));
+
+    // Softbody: position is additive offset from rest mesh position.
+    // Original demo_cloth uses default [0,0,0]-[1,1,1] bounds and doesn't need mapping/swizzling.
+    // HDRP examples use custom bounds and need bounds mapping + space conversion.
+    vec3 legFinalPos;
+    vec3 legNormal;
+
+    if (length(u_boundMin) > 0.001 || length(u_boundMax - vec3(1.0)) > 0.001) {
+      vec3 boundsRange = u_boundMax - u_boundMin;
+      vec3 legPosOffset = legPosVal.xyz * boundsRange + u_boundMin;
+      legFinalPos = position + vec3(-legPosOffset.x, legPosOffset.z, legPosOffset.y); // VAT_ConvertSpace xzy mapping
+
+      vec3 rawNormal = legRotVal.xyz;
+      if (!u_isTexHdr) rawNormal = rawNormal * 2.0 - 1.0;
+      legNormal = normalize(vec3(-rawNormal.x, rawNormal.z, rawNormal.y)); // VAT_ConvertSpace xzy mapping
+    } else {
+      legFinalPos = position + legPosVal.xyz;
+
+      vec3 legUp = vec3(0.0, 1.0, 0.0);
+      legNormal = normalize((cross(legRotVal.xyz, cross(legRotVal.xyz, legUp) + (legRotVal.a * legUp)) * 2.0) + legUp);
+    }
 
     vatOutputs.outPosition = legFinalPos;
     vatOutputs.outNormal = legNormal;
@@ -779,38 +806,82 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vatOutputs.surfaceUv = uv;
     vatOutputs.outColorAndAlpha = legColThis;
     vatOutputs.outSpareColorAndAlpha = vec4(0.0);
-    vatOutputs.outAnimationProgress = vec3(legTimeInFrames);
+    vatOutputs.outAnimationProgress = vec3(mix(legTimeInFrames, legTimeInFramesNext, interpAlpha));
 
 
 
   } else if (variant == 5) { // Legacy Rigidbody (demo_rigid_body)
+    // Frame/time calculation: old format uses discrete frame stepping or smooth interpolation
     float legFrameCount = u_frameCount;
-    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
+    float legTime = VAT_ACTIVE_TIME * u_playbackSpeed;
+    float loopedAnimFrame = fract((u_frameRate / (legFrameCount - 0.01)) * legTime) * legFrameCount;
+    float legFrame = floor(loopedAnimFrame);
+    float legFrameNext = floor(loopedAnimFrame + 1.0);
+    
     float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
+    float legTimeInFramesNext = mod(legFrameNext, legFrameCount) * (1.0 / legFrameCount);
 
     // uv1.x is the per-piece X coordinate for texture sampling (FBX UV channel 1)
     // V is 1.0 - legTimeInFrames (Frame 0 is at the bottom of the EXR, V=1.0)
     vec2 legSampleUv = vec2(uv1.x, 1.0 - legTimeInFrames);
+    vec2 legSampleUvNext = vec2(uv1.x, 1.0 - legTimeInFramesNext);
 
     vec4 legPosThis = vatLoad(u_vatPosTex, legSampleUv);
+    vec4 legPosNext = vatLoad(u_vatPosTex, legSampleUvNext);
     vec4 legRotThis = vatLoad(u_vatRotTex, legSampleUv);
+    vec4 legRotNext = vatLoad(u_vatRotTex, legSampleUvNext);
     vec4 legColThis = vatLoad(u_vatColTex, legSampleUv);
+
+    float interpAlpha = u_interframeInterpolation ? fract(loopedAnimFrame) : 0.0;
 
     // Pivot stored in vatPivot
     vec3 legPivot = vec3(vatPivot.x, vatPivot.y, 1.0 - vatPivot.z);
     vec3 legAtOrigin = position - legPivot;
 
-    // Quaternion: maxComponent encoded in pos.w
-    int legMaxComponent = int(floor(legPosThis.w * 4.0 + 0.5));
-    // Decode quaternion: XYZ from rot texture, W reconstructed
-    vec4 legQ = decodeQuaternion(legRotThis.xyz, legMaxComponent);
+    vec3 legFinalPos;
+    vec3 legNormal;
 
-    // Rotate around pivot then translate to new piece position
-    vec3 legRotated = rotateVectorByQuaternion(legAtOrigin, legQ);
-    vec3 legFinalPos = legRotated + legPosThis.xyz;
+    if (length(u_boundMin) > 0.001 || length(u_boundMax - vec3(1.0)) > 0.001) {
+      // Custom bounds -> HDRP Rigidbody
+      vec3 boundsRange = u_boundMax - u_boundMin;
+      
+      // Interpolate position offsets
+      vec3 offsThis = legPosThis.xyz * boundsRange + u_boundMin;
+      vec3 offsNext = legPosNext.xyz * boundsRange + u_boundMin;
+      vec3 posOffset = mix(vec3(-offsThis.x, offsThis.z, offsThis.y), vec3(-offsNext.x, offsNext.z, offsNext.y), interpAlpha);
 
-    // Rotate normal and tangent with the same quaternion
-    vec3 legNormal = normalize(rotateVectorByQuaternion(normal, legQ));
+      // Interpolate rotation quaternions (NLERP with double-cover negation check)
+      vec4 rThis = legRotThis * 2.0 - 1.0;
+      vec4 rNext = legRotNext * 2.0 - 1.0;
+      vec4 qThis = vec4(-rThis.x, rThis.z, rThis.y, rThis.w);
+      vec4 qNext = vec4(-rNext.x, rNext.z, rNext.y, rNext.w);
+
+      if (dot(qThis, qNext) < 0.0) {
+        qNext = -qNext;
+      }
+      vec4 legQ = normalize(mix(qThis, qNext, interpAlpha));
+
+      legFinalPos = rotateVectorByQuaternion(legAtOrigin, legQ) + posOffset;
+      legNormal = normalize(rotateVectorByQuaternion(normal, legQ));
+    } else {
+      // Default bounds -> Original demo_rigid_body (compressed rotation)
+      // Interpolate positions
+      vec3 posOffset = mix(legPosThis.xyz, legPosNext.xyz, interpAlpha);
+
+      // Decoded quaternions
+      int legMaxComponentThis = int(floor(legPosThis.w * 4.0 + 0.5));
+      int legMaxComponentNext = int(floor(legPosNext.w * 4.0 + 0.5));
+      vec4 qThis = decodeQuaternion(legRotThis.xyz, legMaxComponentThis);
+      vec4 qNext = decodeQuaternion(legRotNext.xyz, legMaxComponentNext);
+
+      if (dot(qThis, qNext) < 0.0) {
+        qNext = -qNext;
+      }
+      vec4 legQ = normalize(mix(qThis, qNext, interpAlpha));
+
+      legFinalPos = rotateVectorByQuaternion(legAtOrigin, legQ) + posOffset;
+      legNormal = normalize(rotateVectorByQuaternion(normal, legQ));
+    }
 
     vatOutputs.outPosition = legFinalPos;
     vatOutputs.outNormal = legNormal;
@@ -818,7 +889,7 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vatOutputs.surfaceUv = uv;
     vatOutputs.outColorAndAlpha = legColThis;
     vatOutputs.outSpareColorAndAlpha = vec4(0.0);
-    vatOutputs.outAnimationProgress = vec3(legTimeInFrames);
+    vatOutputs.outAnimationProgress = vec3(mix(legTimeInFrames, legTimeInFramesNext, interpAlpha));
 
   } else if (variant == 6) { // Legacy Fluid / DynamicMesh (demo_fluid)
     float legFrameCount = u_frameCount;
@@ -848,11 +919,24 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vec4 legColThis = vatLoad(u_vatColTex, legDecodedUv);
 
     // Fluid: position is absolute world-space from texture
-    vec3 legFinalPos = legPosThis.xyz;
+    // Original demo_fluid uses default [0,0,0]-[1,1,1] bounds and doesn't need mapping/swizzling.
+    // HDRP examples use custom bounds and need bounds mapping + space conversion.
+    vec3 legFinalPos;
+    vec3 legNormal;
 
-    // Normal from rot texture (same as legacy softbody)
-    vec3 legUp = vec3(0.0, 1.0, 0.0);
-    vec3 legNormal = normalize((cross(legRotThis.xyz, cross(legRotThis.xyz, legUp) + (legRotThis.a * legUp)) * 2.0) + legUp);
+    if (length(u_boundMin) > 0.001 || length(u_boundMax - vec3(1.0)) > 0.001) {
+      vec3 boundsRange = u_boundMax - u_boundMin;
+      vec3 offs = legPosThis.xyz * boundsRange + u_boundMin;
+      legFinalPos = vec3(-offs.x, offs.z, offs.y); // VAT_ConvertSpace xzy mapping
+
+      vec3 rawNormal = legRotThis.xyz;
+      legNormal = normalize(vec3(-rawNormal.x, rawNormal.z, rawNormal.y)); // VAT_ConvertSpace xzy mapping
+    } else {
+      legFinalPos = legPosThis.xyz;
+
+      vec3 legUp = vec3(0.0, 1.0, 0.0);
+      legNormal = normalize((cross(legRotThis.xyz, cross(legRotThis.xyz, legUp) + (legRotThis.a * legUp)) * 2.0) + legUp);
+    }
 
     vatOutputs.outPosition = legFinalPos;
     vatOutputs.outNormal = legNormal;
@@ -910,6 +994,8 @@ export class VATEffect {
       u_animateFirstFrame: { value: Boolean(this.vatConfig.staticInputs.animateFirstFrame) },
       u_boundMax: { value: this.vatConfig.staticInputs.boundMax },
       u_boundMin: { value: this.vatConfig.staticInputs.boundMin },
+      u_pivotMax: { value: this.vatConfig.staticInputs.pivotMax || new THREE.Vector3(1, 1, 1) },
+      u_pivotMin: { value: this.vatConfig.staticInputs.pivotMin || new THREE.Vector3(0, 0, 0) },
       u_computeSpinfromHeadingVector: { value: Boolean(this.vatConfig.staticInputs.computeSpinfromHeadingVector) },
       u_displayFrame: { value: this.vatConfig.staticInputs.displayFrame || 0.0 },
       u_frameCount: { value: this.vatConfig.staticInputs.frameCount },

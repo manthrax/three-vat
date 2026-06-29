@@ -193,7 +193,7 @@ export class VATLoader {
       instance: false,
       instanceCount: 0,
       instanceUpdateDynamicData: false,
-      interframeInterpolation: false,
+      interframeInterpolation: true,
       interpolateColor: true,
       interpolateSpareColor: true,
       isColorTexHdr: true,
@@ -233,9 +233,10 @@ export class VATLoader {
     };
 
     // Variant overrides
-    if (type === 'Dynamicmesh') {
+    if (type === 'Dynamicmesh' || type === 'Fluid') {
       defaults.useLookup = true;
       defaults.noLerping = true;
+      defaults.interframeInterpolation = false;
       defaults.supportSurfaceNormalMaps = true;
       defaults.surfaceNormals = true;
       defaults.useCompressedNormals = false;
@@ -248,6 +249,8 @@ export class VATLoader {
       useRightHandedCoordinates: metadata['Axis System'] === 'Right-Handed Y-Up',
       boundMin: new THREE.Vector3(metadata['Bound Min X'] !== undefined ? metadata['Bound Min X'] : 0, metadata['Bound Min Y'] !== undefined ? metadata['Bound Min Y'] : 0, metadata['Bound Min Z'] !== undefined ? metadata['Bound Min Z'] : 0),
       boundMax: new THREE.Vector3(metadata['Bound Max X'] !== undefined ? metadata['Bound Max X'] : 1, metadata['Bound Max Y'] !== undefined ? metadata['Bound Max Y'] : 1, metadata['Bound Max Z'] !== undefined ? metadata['Bound Max Z'] : 1),
+      pivotMin: new THREE.Vector3(metadata['Pivot Min X'] !== undefined ? metadata['Pivot Min X'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Y'] !== undefined ? metadata['Pivot Min Y'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Z'] !== undefined ? metadata['Pivot Min Z'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0)),
+      pivotMax: new THREE.Vector3(metadata['Pivot Max X'] !== undefined ? metadata['Pivot Max X'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Y'] !== undefined ? metadata['Pivot Max Y'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Z'] !== undefined ? metadata['Pivot Max Z'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1)),
       frameCount: metadata['Frame Count'] || 1,
       frameRate: metadata['Houdini FPS'] || 30,
       particleShardCount: metadata['Particle Shard Count'] || 0,
@@ -360,6 +363,12 @@ export class VATLoader {
           if (key === 'vatLookupTex' && format === 'png') {
             texture = await loadRawPngTexture(path);
           } else {
+            // Check if file exists and is not the SPA HTML fallback page
+            const checkRes = await fetch(path, { method: 'HEAD' }).catch(() => null);
+            if (!checkRes || !checkRes.ok || checkRes.headers.get('content-type')?.includes('text/html')) {
+              throw new Error(`Texture not found (404/HTML fallback)`);
+            }
+
             texture = format === 'exr'
               ? await exrLoader.loadAsync(path)
               : await loader.loadAsync(path);
