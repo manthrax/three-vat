@@ -4,6 +4,10 @@ import * as THREE from 'three';
 const VAT3_GLSL_COMMON = `
 #define tau 6.28318530718
 
+#ifndef VAT_ACTIVE_TIME
+#define VAT_ACTIVE_TIME u_inputTime
+#endif
+
 // Uniforms
 uniform sampler2D u_vatColTex;
 uniform sampler2D u_vatLookupTex;
@@ -234,7 +238,7 @@ vec3 rotateVectorByQuaternion(vec3 vect, vec4 quat) {
 }
 
 Vat3_AnimationData computeAnimationData() {
-  float timeElapsed = u_inputTime - u_gameTimeAtFirstFrame;
+  float timeElapsed = VAT_ACTIVE_TIME - u_gameTimeAtFirstFrame;
   float animationProgress = (u_frameRate / (u_frameCount - 0.01)) * timeElapsed;
   float loopedAnimFrame = fract(animationProgress * u_playbackSpeed) * u_frameCount;
   
@@ -748,7 +752,7 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
   else if (variant == 4) { // Legacy Softbody (demo_cloth)
     // Frame/time calculation: old format uses discrete frame stepping
     float legFrameCount = u_frameCount;
-    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * u_inputTime * u_playbackSpeed) * legFrameCount);
+    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
     float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
 
     // Reference softVertexShader:
@@ -783,7 +787,7 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
 
   } else if (variant == 5) { // Legacy Rigidbody (demo_rigid_body)
     float legFrameCount = u_frameCount;
-    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * u_inputTime * u_playbackSpeed) * legFrameCount);
+    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
     float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
 
     // uv1.x is the per-piece X coordinate for texture sampling (FBX UV channel 1)
@@ -822,7 +826,7 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
 
   } else if (variant == 6) { // Legacy Fluid / DynamicMesh (demo_fluid)
     float legFrameCount = u_frameCount;
-    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * u_inputTime * u_playbackSpeed) * legFrameCount);
+    float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
     float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
 
     // Fluid FBX lookup UV is in uv (UV0), uv.y values near 1.0.
@@ -871,9 +875,20 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
 export class VATEffect {
   constructor(assets, options = {}) {
     this.assets = assets;
-    this.mesh = assets.mesh;
+    this.mesh = options.instancedMesh || assets.mesh;
     this.type = assets.type;
     this.vatConfig = assets.vatConfig;
+    this.isInstanced = Boolean(options.instancedMesh || options.instanced || this.mesh.isInstancedMesh);
+
+    if (this.isInstanced && this.mesh.geometry) {
+      const maxCount = this.mesh.instanceMatrix ? this.mesh.instanceMatrix.count : (this.mesh.count || 1);
+      const timeOffsets = new Float32Array(maxCount);
+      const speedScales = new Float32Array(maxCount);
+      speedScales.fill(1.0);
+
+      this.mesh.geometry.setAttribute('vatInstanceTimeOffset', new THREE.InstancedBufferAttribute(timeOffsets, 1));
+      this.mesh.geometry.setAttribute('vatInstanceSpeedScale', new THREE.InstancedBufferAttribute(speedScales, 1));
+    }
 
     this._speed = 1.0;
     this._time = 0.0;
@@ -982,6 +997,24 @@ export class VATEffect {
     this.uniforms.u_enablePlayback.value = enabled;
   }
 
+  setInstanceTimeOffset(index, offset) {
+    if (!this.isInstanced) return;
+    const attr = this.mesh.geometry.getAttribute('vatInstanceTimeOffset');
+    if (attr) {
+      attr.setX(index, offset);
+      attr.needsUpdate = true;
+    }
+  }
+
+  setInstanceSpeedScale(index, scale) {
+    if (!this.isInstanced) return;
+    const attr = this.mesh.geometry.getAttribute('vatInstanceSpeedScale');
+    if (attr) {
+      attr.setX(index, scale);
+      attr.needsUpdate = true;
+    }
+  }
+
   set albedoTexture(tex) {
     this._albedoTexture = tex;
     if (this.mesh.material) {
@@ -1070,8 +1103,17 @@ export class VATEffect {
           declarations += 'attribute vec2 vatUv3;\n';
         }
 
+        let instancedDeclarations = '';
+        if (this.isInstanced) {
+          instancedDeclarations = `
+attribute float vatInstanceTimeOffset;
+attribute float vatInstanceSpeedScale;
+#define VAT_ACTIVE_TIME ((u_inputTime + vatInstanceTimeOffset) * vatInstanceSpeedScale)
+\n`;
+        }
+
         // Declare attributes if not present, and common code
-        let header = VAT3_GLSL_COMMON + '\n' + declarations + '\n';
+        let header = instancedDeclarations + VAT3_GLSL_COMMON + '\n' + declarations + '\n';
 
         vertex = header + vertex;
 

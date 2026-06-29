@@ -7,13 +7,15 @@
   <title>WebGL2 Houdini VAT2 & VAT3 - Demo</title>
   <style>
     :root {
-      --bg-gradient: linear-gradient(135deg, #0d0e15 0%, #151828 100%);
-      --accent-color: #6366f1;
-      --accent-glow: rgba(99, 102, 241, 0.4);
-      --panel-bg: rgba(20, 22, 37, 0.6);
-      --panel-border: rgba(255, 255, 255, 0.08);
-      --text-color: #f3f4f6;
-      --text-muted: #9ca3af;
+      --bg-gradient: linear-gradient(180deg, #070605 0%, #100d0a 100%);
+      --accent-color: #d97706;
+      /* Amber */
+      --accent-glow: rgba(217, 119, 6, 0.25);
+      --panel-bg: rgba(12, 10, 8, 0.85);
+      --panel-border: transparent;
+      --text-color: #fef3c7;
+      /* Warm gold/off-white */
+      --text-muted: #d97706;
     }
 
     * {
@@ -27,7 +29,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg-gradient);
       color: var(--text-color);
     }
@@ -50,94 +52,94 @@
       height: 100%;
       z-index: 10;
       pointer-events: none;
+      padding: 8px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      padding: 24px;
     }
 
     .interactive {
       pointer-events: auto;
     }
 
-    /* Glassmorphic Panel */
+    /* Minimal Borderless Panel */
     .glass-panel {
       background: var(--panel-bg);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border-radius: 4px;
-      padding: 4px;
-      box-shadow: 0 4px 4px 0 rgba(0, 0, 0, 0.37);
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 8px 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 15px rgba(217, 119, 6, 0.08);
+      transition: all 0.2s ease;
     }
 
     .header-panel {
+      position: absolute;
+      top: 8px;
+      left: 8px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
-      width: 100%;
+      flex-direction: column;
+      gap: 2px;
+      align-items: flex-start;
     }
 
     h1 {
-      font-size: 20px;
+      font-size: 13px;
       font-weight: 700;
-      letter-spacing: -0.5px;
-      background: linear-gradient(to right, #ffffff, #9ca3af);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      letter-spacing: 0.5px;
+      color: #ffffff;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
+      text-transform: uppercase;
     }
 
     h1 span {
-      font-size: 10px;
-      font-weight: 600;
+      font-size: 8px;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 0.5px;
       background: var(--accent-color);
-      -webkit-background-clip: initial;
-      -webkit-text-fill-color: initial;
-      color: #fff;
-      padding: 2px 6px;
-      border-radius: 4px;
-      box-shadow: 0 0 10px var(--accent-glow);
+      color: #000;
+      padding: 1px 4px;
+      border-radius: 2px;
     }
 
     /* Bottom Control Panel */
     .controls-panel {
-      width: 450px;
+      width: 480px;
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 20px;
-      align-self: center;
-      margin-bottom: 8px;
+      gap: 16px;
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
     }
 
     .toggle-panel {
       position: absolute;
-      top: 100px;
-      right: 24px;
+      top: 8px;
+      right: 8px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding: 12px;
-      width: 170px;
+      gap: 6px;
+      padding: 8px;
+      width: 130px;
       border-radius: 4px;
     }
 
     .control-group {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 4px;
       flex: 1;
     }
 
     label {
-      font-size: 11px;
-      font-weight: 500;
+      font-size: 9px;
+      font-weight: 600;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -145,27 +147,29 @@
 
     input[type="range"],
     button {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: none;
+      border-radius: 3px;
       color: var(--text-color);
-      padding: 10px 14px;
-      font-size: 14px;
+      padding: 6px 10px;
+      font-size: 11px;
       outline: none;
       transition: all 0.2s;
     }
 
     button {
       background: var(--accent-color);
-      border: none;
-      font-weight: 600;
+      color: #000;
+      font-weight: 700;
       cursor: pointer;
-      box-shadow: 0 4px 14px var(--accent-glow);
+      box-shadow: 0 2px 8px var(--accent-glow);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     button:hover {
-      background: #4f46e5;
-      transform: translateY(-1px);
+      background: #fbbf24;
+      transform: translateY(-0.5px);
     }
 
     button:active {
@@ -176,38 +180,40 @@
     .playback-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      gap: 4px;
     }
 
-    .speed-display {
+    .speed-display,
+    .instances-display {
       text-align: right;
-      font-size: 12px;
-      color: var(--text-muted);
+      font-size: 9px;
+      color: var(--text-color);
       font-variant-numeric: tabular-nums;
+      font-weight: 600;
     }
 
     /* Range slider customizations */
     input[type="range"] {
       -webkit-appearance: none;
       padding: 0;
-      height: 6px;
-      background: rgba(255, 255, 255, 0.1);
-      border: none;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 2px;
       cursor: pointer;
     }
 
     input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 16px;
-      height: 16px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
       background: var(--accent-color);
-      box-shadow: 0 0 6px var(--accent-glow);
+      box-shadow: 0 0 4px var(--accent-glow);
       transition: transform 0.1s;
     }
 
     input[type="range"]::-webkit-slider-thumb:hover {
-      transform: scale(1.2);
+      transform: scale(1.15);
     }
 
     /* Loading overlay */
@@ -217,30 +223,32 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(13, 14, 21, 0.85);
+      background: rgba(8, 7, 6, 0.9);
       z-index: 100;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
-      gap: 16px;
+      gap: 12px;
       transition: opacity 0.5s ease;
       backdrop-filter: blur(8px);
     }
 
     .spinner {
-      width: 48px;
-      height: 48px;
-      border: 4px solid rgba(255, 255, 255, 0.1);
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(255, 255, 255, 0.05);
       border-left-color: var(--accent-color);
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
 
     #loading-text {
-      font-size: 16px;
-      font-weight: 500;
-      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-color);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     /* Floating labels above 3D models */
@@ -248,16 +256,15 @@
       position: absolute;
       z-index: 5;
       transform: translate(-50%, -100%);
-      background: rgba(10, 11, 20, 0.85);
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      padding: 6px 12px;
-      border-radius: 8px;
-      font-size: 11px;
-      font-weight: 600;
+      background: rgba(10, 8, 6, 0.85);
+      padding: 4px 8px;
+      border-radius: 2px;
+      font-size: 9px;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: #ffffff;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      color: #fbbf24;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
       pointer-events: none;
       white-space: nowrap;
       transition: opacity 0.1s ease;
@@ -296,43 +303,53 @@
   <div class="overlay">
     <!-- Header -->
     <div class="glass-panel header-panel interactive">
-      <h1>THREEJS Houdini VAT3<span>VAT3 for WebGLRenderer WebGL2</span></h1>
-      <div style="font-size: 12px; color: var(--text-muted)">Softbody &bull; Particles &bull; Rigidbody &bull;
-        DynamicMesh &bull; Cloth &bull; Fluid</div>
+      <h1>THREE-VAT : Houdini VAT loader for Threejs<span>VAT2 & VAT3</span></h1>
+      <div style="font-size: 8px; font-weight: 600; color: #705510; text-transform: uppercase; letter-spacing: 0.5px;">
+        Softbody &bull; Particles &bull; Rigidbody &bull; Fluid</div>
     </div>
 
     <!-- Toggle Panel (Right side) -->
     <div class="glass-panel toggle-panel interactive" id="toggle-panel">
       <div
-        style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 4px;">
+        style="font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; padding-bottom: 2px;">
         Toggle Demos</div>
     </div>
 
     <!-- Controls Panel (Centered at bottom) -->
     <div class="glass-panel controls-panel interactive">
       <!-- Play/Pause & Reset -->
-      <div class="control-group">
+      <div class="control-group" style="max-width: 100px;">
         <label>Playback</label>
         <div class="playback-row">
           <button id="play-btn">Pause</button>
-          <button id="reset-btn" style="background: rgba(255,255,255,0.08); box-shadow: none;">Reset</button>
+          <button id="reset-btn"
+            style="background: rgba(255,255,255,0.05); color: #fff; box-shadow: none;">Reset</button>
         </div>
       </div>
 
-      <!-- Playback Speed with very fine granularity -->
+      <!-- Playback Speed -->
       <div class="control-group">
-        <div style="display: flex; justify-content: space-between;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
           <label for="speed-range">Speed</label>
           <span class="speed-display" id="speed-val">1.000x</span>
         </div>
         <input type="range" id="speed-range" min="0" max="2.0" step="0.005" value="1">
       </div>
 
+      <!-- Dynamic Instances -->
+      <div class="control-group">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <label for="instances-range">Instances</label>
+          <span class="instances-display" id="instances-val">5</span>
+        </div>
+        <input type="range" id="instances-range" min="1" max="100" step="1" value="5">
+      </div>
+
       <!-- Helpers Toggle -->
-      <div class="control-group" style="align-items: center; justify-content: center; max-width: 80px;">
-        <label for="grid-toggle" style="cursor: pointer; margin-bottom: 4px;">Grid</label>
+      <div class="control-group" style="align-items: center; justify-content: center; max-width: 45px;">
+        <label for="grid-toggle" style="cursor: pointer; margin-bottom: 2px;">Grid</label>
         <input type="checkbox" id="grid-toggle" checked
-          style="width: 20px; height: 20px; cursor: pointer; accent-color: var(--accent-color);">
+          style="width: 12px; height: 12px; cursor: pointer; accent-color: var(--accent-color);">
       </div>
     </div>
   </div>
@@ -350,6 +367,7 @@
     clock.connect(document);
     let isPlaying = true;
     let playSpeed = 1.0;
+    let currentInstances = 5;
 
     const loaderEl = document.getElementById('loader');
     const loadingTextEl = document.getElementById('loading-text');
@@ -372,10 +390,10 @@
       // Scene
       scene = new THREE.Scene();
       scene.background = new THREE.Color(0x07080e);
-      scene.fog = new THREE.FogExp2(0x07080e, 0.02);
+      //cene.fog = new THREE.FogExp2(0x07080e, 0.02);
 
       // Camera
-      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
       camera.position.set(0, 5, 17);
 
       // Renderer
@@ -412,7 +430,7 @@
       let css2threecolor = (cssv) => new THREE.Color(cssv.slice(0, -2))
       // Floor grid helper
 
-      gridHelper = new THREE.GridHelper(40, 40, `#1b2236`, '#1c1e10');
+      gridHelper = new THREE.GridHelper(40, 40, "#1b2236", '#1c1e10');
       //gridHelper.position.y = -1.0;
       scene.add(gridHelper);
 
@@ -443,6 +461,18 @@
         });
       });
 
+      const instancesRange = document.getElementById('instances-range');
+      const instancesVal = document.getElementById('instances-val');
+      instancesRange.addEventListener('input', (e) => {
+        currentInstances = parseInt(e.target.value);
+        instancesVal.innerText = currentInstances;
+        vats.forEach(item => {
+          if (item.vat.mesh && item.vat.mesh.isInstancedMesh) {
+            item.vat.mesh.count = currentInstances;
+          }
+        });
+      });
+
       document.getElementById('grid-toggle').addEventListener('change', (e) => {
         gridHelper.visible = e.target.checked;
       });
@@ -465,48 +495,77 @@
         loadingTextEl.innerText = `Loading ${cfg.label}...`;
         try {
           const assets = await VATLoader.load('examples/', cfg.name);
-          //console.log(cfg.label, "mesh attributes:", Object.keys(assets.mesh.geometry.attributes));
 
           let options = { camera };
-          if (cfg.name === 'vat3_particles') {
-            // Particles uses its specific albedo png
-            const textureUrl = 'examples/vat3_particles/vat3_particles_col.png';
-            options.albedoTexture = await new THREE.TextureLoader().loadAsync(textureUrl);
-          }
 
-          if (cfg.name === 'vat3_softBody') {
-            // Softbody flag uses its specific flag texture
+          // 1. Resolve material overrides
+          let material = Array.isArray(assets.mesh.material) ? assets.mesh.material[0] : assets.mesh.material;
+
+          if (cfg.name === 'vat3_particles') {
+            const textureUrl = 'examples/vat3_particles/vat3_particles_col.png';
+            const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
+            material = new THREE.MeshStandardMaterial({ map: albedo });
+            options.albedoTexture = albedo;
+          } else if (cfg.name === 'vat3_softBody') {
             const textureUrl = 'examples/vat3_softbody/flag_banner_red.jpg';
-            options.albedoTexture = await new THREE.TextureLoader().loadAsync(textureUrl);
-          }
-          if (cfg.name === 'demo_fluid') {
-            assets.mesh.material = new THREE.MeshPhysicalMaterial({
-              color: 0xff0000, // lightblue
+            const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
+            material = new THREE.MeshStandardMaterial({ map: albedo });
+            options.albedoTexture = albedo;
+          } else if (cfg.name === 'demo_fluid') {
+            material = new THREE.MeshPhysicalMaterial({
+              color: 0xff0000,
               roughness: 0.2,
               metalness: 0.1,
             });
+          } else if (cfg.name === 'demo_rigid_body') {
+            material = new THREE.MeshStandardMaterial();
+          } else {
+            // Clone to avoid sharing material settings across instances of other classes
+            material = material.clone();
           }
 
-          if (cfg.name === 'demo_rigid_body') {
-            assets.mesh.material = new THREE.MeshStandardMaterial();
-          }
+          // 2. Create InstancedMesh with 10 instances (max capacity) extending in negative Z
+          const count = 100;
+          const instancedMesh = new THREE.InstancedMesh(assets.mesh.geometry, material, count);
 
-          //https://playground.babylonjs.com/#XKW2C5
+          const dummy = new THREE.Object3D();
+          for (let j = 0; j < count; j++) {
+            // Extend backward in Z
+            dummy.position.set(0, 0, -j * 3.5);
+            // Apply scale overrides
+            if (cfg.name === 'vat3_particles') {
+              dummy.scale.setScalar(0.1);
+            } else {
+              dummy.scale.setScalar(1.0);
+            }
+            if (j) dummy.rotation.y = Math.random() * Math.PI * 2
+            dummy.updateMatrix();
+            instancedMesh.setMatrixAt(j, dummy.matrix);
+          }
+          instancedMesh.instanceMatrix.needsUpdate = true;
+          instancedMesh.frustumCulled = false;
+
+          // Set initial visible count
+          instancedMesh.count = currentInstances;
+          options.instancedMesh = instancedMesh;
 
           const vat = new VATEffect(assets, options);
           vat.speed = playSpeed;
           vat.setEnabled(isPlaying);
 
+          // 3. Stagger start times and playback speeds for all 10 instances
+          for (let j = 0; j < count; j++) {
+            vat.setInstanceTimeOffset(j, j * 0.4);
+            vat.setInstanceSpeedScale(j, 0.8 + Math.random() * 0.4);
+          }
+
           // Place in row
           if (cfg.posX) vat.mesh.position.x = cfg.posX;
           if (cfg.posY) vat.mesh.position.y = cfg.posY;
-          if (cfg.name === 'vat3_particles') {
-            // Offset particles slightly down to match grid alignment
-            vat.mesh.scale.multiplyScalar(.1)
-          }
+
           let effectContainer = new THREE.Object3D();
           effectContainer.add(vat.mesh);
-          scene.add(effectContainer)
+          scene.add(effectContainer);
           // Add HTML floating label element
           const labelDiv = document.createElement('div');
           labelDiv.className = 'floating-label';
