@@ -896,13 +896,6 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     float legFrame = floor(fract((u_frameRate / (legFrameCount - 0.01)) * VAT_ACTIVE_TIME * u_playbackSpeed) * legFrameCount);
     float legTimeInFrames = mod(legFrame, legFrameCount) * (1.0 / legFrameCount);
 
-    // Fluid FBX lookup UV is in uv (UV0), uv.y values near 1.0.
-    // loadRawPngTexture uses flipY=false → V=0 = TOP of PNG file = frame 0.
-    // Reference uses TextureLoader (flipY=true) → V=1 = TOP = frame 0,
-    //   and samples at V = uv.y - t ≈ 0.9999 (near 1.0 = top).
-    // To match: our V = 1.0 - uv.y + t (converts from reference's flipY=true space).
-    //   At t=0: V = 1.0 - 0.9999 ≈ 0.0001 (near 0 = TOP in our flipY=false) = frame 0 ✓
-    //   As t increases: V increases toward 1.0 (bottom of PNG = last frame) ✓
     float legLookupV = fract(1.0 - uv.y + legTimeInFrames);
     vec2 legLookupUv = vec2(uv.x, legLookupV);
     vec4 legLookupSample = vatLoad(u_vatLookupTex, legLookupUv);

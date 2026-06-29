@@ -13,5 +13,7 @@ It was cobbled together using these repos/resources as a reference:
 https://github.com/mikelyndon/r3f-webgl-vertex-animation-textures
 https://github.com/floating-world-lda/vat3-wgsl-ts/tree/main/three-js
 https://github.com/floating-world-lda/vat3-wgsl-ts/tree/main/babylon-js
+https://playground.babylonjs.com/#XKW2C5
+
 
 -by Thrax.

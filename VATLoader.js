@@ -137,6 +137,8 @@ async function loadRawPngTexture(filePath) {
   texture.generateMipmaps = false;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
   texture.needsUpdate = true;
   return texture;
 }
