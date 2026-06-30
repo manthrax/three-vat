@@ -527,13 +527,22 @@
       // Start loop
       renderer.setAnimationLoop(animate);
     }
+
+    const data = new Uint8Array([255, 255, 255, 255, 128, 128, 128, 255, 128, 128, 128, 255, 255, 255, 255, 255]); // grey
+    const defaultTexture = new THREE.DataTexture(data, 2, 2, THREE.RGBAFormat);
+    defaultTexture.needsUpdate = true;
+    defaultTexture.repeat.set(10, 10)
+    defaultTexture.wrapS = defaultTexture.wrapT = THREE.RepeatWrapping;
     let matDefaults = {
       roughness: 0.05,
       metalness: 0.6,
       color: 'white',
+      map: defaultTexture,
       //transparent: true,
       //opacity: .5,
     }
+
+
     let defaultMat = new THREE.MeshStandardMaterial(matDefaults);
     async function loadAllVats() {
       loaderEl.style.opacity = '1';
@@ -572,8 +581,13 @@
           }
         } else if (cfg.name === 'demo_fluid') {
           material = defaultMat.clone()
+          material.map = null;
+
         } else if (cfg.name === 'demo_rigid_body') {
           material = defaultMat.clone()
+        } else if (cfg.name === 'vat3_dynamicMesh') {
+
+          //material.map = null;
         } else {
           // Clone to avoid sharing material settings across instances of other classes
           material = defaultMat.clone();
