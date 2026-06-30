@@ -523,7 +523,14 @@
       // Start loop
       renderer.setAnimationLoop(animate);
     }
-
+    let matDefaults = {
+      roughness: 0.05,
+      metalness: 0.6,
+      color: 'white',
+      //transparent: true,
+      //opacity: .5,
+    }
+    let defaultMat = new THREE.MeshStandardMaterial(matDefaults);
     async function loadAllVats() {
       loaderEl.style.opacity = '1';
       loaderEl.style.pointerEvents = 'auto';
@@ -536,39 +543,36 @@
 
         // 1. Resolve material overrides
         let material = Array.isArray(assets.mesh.material) ? assets.mesh.material[0] : assets.mesh.material;
-        let matDefaults = {
-          roughness: 0.05,
-          metalness: 0.9
-        }
+
         if (cfg.name === 'vat3_particles') {
           try {
             const textureUrl = `examples/vat3_particles/vat3_particles_col.png`;
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
-            material = new THREE.MeshStandardMaterial({ map: albedo, ...matDefaults });
+            material = defaultMat.clone();
+            material.map = albedo;
             options.albedoTexture = albedo;
           } catch (e) {
             console.warn('vat3_particles: albedo texture failed to load', e);
-            material = new THREE.MeshStandardMaterial({ color: 'white', ...matDefaults });
+            material = defaultMat.clone();
           }
         } else if (cfg.name === 'vat3_softBody') {
           try {
             const textureUrl = `examples/vat3_softBody/flag_banner_red.jpg`;
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
-            material = new THREE.MeshStandardMaterial({ map: albedo, ...matDefaults });
+            material = defaultMat.clone();
+            material.map = albedo;
             options.albedoTexture = albedo;
           } catch (e) {
             console.warn('vat3_softBody: albedo texture failed to load', e);
-            material = new THREE.MeshStandardMaterial({ color: 'white', ...matDefaults });
+            material = defaultMat.clone()
           }
         } else if (cfg.name === 'demo_fluid') {
-          material = new THREE.MeshPhysicalMaterial({
-            color: 'white', ...matDefaults
-          });
+          material = defaultMat.clone()
         } else if (cfg.name === 'demo_rigid_body') {
-          material = new THREE.MeshStandardMaterial({ ...matDefaults });
+          material = defaultMat.clone()
         } else {
           // Clone to avoid sharing material settings across instances of other classes
-          material = material.clone();
+          material = defaultMat.clone();
         }
 
         // 2. Create InstancedMesh with 100 instances (max capacity) extending in negative Z

@@ -1138,8 +1138,9 @@ export class VATEffect {
         clonedMat.transparent = true;
         clonedMat.depthWrite = false;
       } else {
-        clonedMat.transparent = false;
-        clonedMat.depthWrite = true;
+        // Keep user-configured values if already set to true/false, otherwise default to opaque
+        if (clonedMat.transparent === undefined) clonedMat.transparent = false;
+        if (clonedMat.depthWrite === undefined) clonedMat.depthWrite = true;
       }
 
       // vertexColors must be false: VAT meshes have no geometry 'color' attribute.
