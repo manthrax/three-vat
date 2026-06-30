@@ -1,0 +1,19 @@
+[
+    {
+        "Axis System": "Right-Handed Y-Up",
+        "Bound Max X": 15.300000190734863,
+        "Bound Max Y": 13.5,
+        "Bound Max Z": 16.700000762939453,
+        "Bound Min X": -15.899999618530273,
+        "Bound Min Y": -15.301000595092773,
+        "Bound Min Z": -16.600000381469727,
+        "Frame Count": 240,
+        "Houdini FPS": 24.0,
+        "Name": "vat3_particles",
+        "Spare Color Texture": 0,
+        "Two Position Textures": 0,
+        "Use HDR Textures": 0,
+        "VAT Type": "Particles",
+        "Vertex Count": 2048
+    }
+]
