@@ -384,7 +384,7 @@
     const config = [
       { name: 'demo_cloth', label: 'Demo Cloth', posX: -12.0, posY: 1 },
       { name: 'vat3_softBody', label: 'Softbody', posX: -8.0 },
-      { name: 'demo_fluid', label: 'Demo Fluid', posX: -4.0, posY: 1 },
+      { name: 'demo_fluid', label: 'Demo Fluid', posX: -4.0, posY: .7 },
       { name: 'vat3_dynamicMesh', label: 'Dynamic Mesh', posX: 0.0, posY: .5 },
       { name: 'vat3_particles', label: 'Particles', posX: 4.0, posY: 1, scale: 0.1 },
       { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 8.0 },
@@ -465,7 +465,11 @@
       //gridHelper.position.y = -1.0;
       scene.add(gridHelper);
 
-      let plane = new THREE.Mesh(new THREE.PlaneGeometry(50, 250), new THREE.MeshStandardMaterial({ color: '#421' }));
+      let plane = new THREE.Mesh(new THREE.PlaneGeometry(50, 250), new THREE.MeshStandardMaterial({
+        color: '#222',
+        transparent: true,
+        opacity: .7
+      }));
       plane.geometry.rotateX(-Math.PI * .5)
       plane.receiveShadow = true
       //plane.position.y -= 1;
