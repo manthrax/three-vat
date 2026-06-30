@@ -417,8 +417,15 @@ Vat3_ParticleDirection calculateParticleOrientation(Vat3_VelocityData velocityDa
   vec3 particleUpDir;
   
   if (u_useParticleBillboarding) {
-    vec3 camRight = normalize((u_viewToModelMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
-    vec3 camUp = normalize((u_viewToModelMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+    // Combine modelView matrix with instance matrix if instancing is active
+    mat4 instModelView = u_modelViewMatrix;
+    #ifdef USE_INSTANCING
+      instModelView = u_modelViewMatrix * instanceMatrix;
+    #endif
+
+    // The view-to-local transform is the transpose of the local-to-view rotation
+    vec3 camRight = normalize(vec3(instModelView[0].x, instModelView[1].x, instModelView[2].x));
+    vec3 camUp    = normalize(vec3(instModelView[0].y, instModelView[1].y, instModelView[2].y));
     particleRightDir = -camRight;
     particleUpDir = camUp;
   } else {
@@ -1164,7 +1171,7 @@ export class VATEffect {
         const instKey = this.isInstanced ? '-inst' : '';
         return `vat-${variantId}${instKey}`;
       };
-      
+
       clonedMat.onBeforeCompile = (shader) => {
         // 1. Inject uniforms
         Object.keys(this.uniforms).forEach((key) => {
