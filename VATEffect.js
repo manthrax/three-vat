@@ -1119,6 +1119,8 @@ export class VATEffect {
       else if (this.type === 'Dynamicmesh') variantId = 6; // Legacy Fluid/DynamicMesh
     }
 
+    let activeDefines = {};
+
     materials.forEach((mat, index) => {
       // Clone standard material to apply specific overrides
       const clonedMat = mat.clone();
@@ -1156,11 +1158,13 @@ export class VATEffect {
         clonedMat.map = this._albedoTexture;
       }
 
+      activeDefines = clonedMat.defines;
+
       clonedMat.customProgramCacheKey = () => {
         const instKey = this.isInstanced ? '-inst' : '';
         return `vat-${variantId}${instKey}`;
       };
-
+      
       clonedMat.onBeforeCompile = (shader) => {
         // 1. Inject uniforms
         Object.keys(this.uniforms).forEach((key) => {
@@ -1281,6 +1285,82 @@ attribute vec2 vatInstanceParams;
       }
     });
 
+    // Create custom materials for shadow depth passes
+    // We clone Three.js's built-in depth/distance shaders to custom ShaderMaterials.
+    // This forces Three.js to bind all of our uniforms (including samplers) during the shadow passes.
+    const depthShader = THREE.ShaderLib.depth;
+    const depthUniforms = THREE.UniformsUtils.clone(depthShader.uniforms);
+    Object.keys(this.uniforms).forEach((key) => {
+      depthUniforms[key] = this.uniforms[key];
+    });
+
+    const needsUv1 = variantId === 1 || variantId === 2 || variantId === 3 || variantId === 4 || variantId === 5;
+    const needsUv2And3 = variantId === 2 || variantId === 5;
+    let declarations = '';
+    if (needsUv1) declarations += 'attribute vec2 vatUv1;\n';
+    if (needsUv2And3) declarations += 'attribute vec3 vatPivot;\n';
+    let instancedDeclarations = '';
+    if (this.isInstanced) {
+      instancedDeclarations = `
+attribute vec2 vatInstanceParams;
+#define VAT_ACTIVE_TIME ((u_inputTime + vatInstanceParams.x) * vatInstanceParams.y)
+\n`;
+    }
+    let header = instancedDeclarations + VAT3_GLSL_COMMON + '\n' + declarations + '\n';
+    const uv1Arg = needsUv1 ? 'vatUv1' : 'vec2(0.0)';
+    const vatPivotArg = needsUv2And3 ? 'vatPivot' : 'vec3(0.0)';
+
+    let depthVertex = depthShader.vertexShader;
+    depthVertex = header + depthVertex;
+    depthVertex = depthVertex.replace('void main() {', `
+    void main() {
+      Vat3_Outputs vatOut = applyVatDeformation(position, normal, vec3(0.0), uv, ${uv1Arg}, ${vatPivotArg}, ${variantId});
+    `);
+    depthVertex = depthVertex.replace('#include <begin_vertex>', `
+    vec3 transformed = vatOut.outPosition;
+    `);
+
+    const depthMat = new THREE.ShaderMaterial({
+      uniforms: depthUniforms,
+      vertexShader: depthVertex,
+      fragmentShader: depthShader.fragmentShader,
+      defines: Object.assign({}, activeDefines, {
+        DEPTH_PACKING: THREE.RGBADepthPacking
+      })
+    });
+    if (this.isInstanced) {
+      depthMat.defines.USE_INSTANCING = '';
+    }
+    this.mesh.customDepthMaterial = depthMat;
+
+    // Create custom distance material for point light shadows
+    const distShader = THREE.ShaderLib.distance;
+    const distUniforms = THREE.UniformsUtils.clone(distShader.uniforms);
+    Object.keys(this.uniforms).forEach((key) => {
+      distUniforms[key] = this.uniforms[key];
+    });
+
+    let distVertex = distShader.vertexShader;
+    distVertex = header + distVertex;
+    distVertex = distVertex.replace('void main() {', `
+    void main() {
+      Vat3_Outputs vatOut = applyVatDeformation(position, normal, vec3(0.0), uv, ${uv1Arg}, ${vatPivotArg}, ${variantId});
+    `);
+    distVertex = distVertex.replace('#include <begin_vertex>', `
+    vec3 transformed = vatOut.outPosition;
+    `);
+
+    const distMat = new THREE.ShaderMaterial({
+      uniforms: distUniforms,
+      vertexShader: distVertex,
+      fragmentShader: distShader.fragmentShader,
+      defines: Object.assign({}, activeDefines)
+    });
+    if (this.isInstanced) {
+      distMat.defines.USE_INSTANCING = '';
+    }
+    this.mesh.customDistanceMaterial = distMat;
+
     this.mesh.visible = true;
   }
 
@@ -1291,19 +1371,23 @@ attribute vec2 vatInstanceParams;
       const viewMatrix = this._camera.matrixWorldInverse;
       const worldMatrix = this.mesh.matrixWorld;
 
-      const modelViewMatrix = new THREE.Matrix4();
-      modelViewMatrix.multiplyMatrices(viewMatrix, worldMatrix);
+      if (!this._tempModelView) {
+        this._tempModelView = new THREE.Matrix4();
+        this._tempViewToModel = new THREE.Matrix4();
+      }
 
-      const viewToModelMatrix = new THREE.Matrix4();
-      viewToModelMatrix.copy(modelViewMatrix).invert();
+      this._tempModelView.multiplyMatrices(viewMatrix, worldMatrix);
+      this._tempViewToModel.copy(this._tempModelView).invert();
 
-      this.uniforms.u_modelViewMatrix.value.copy(modelViewMatrix);
-      this.uniforms.u_viewToModelMatrix.value.copy(viewToModelMatrix);
+      this.uniforms.u_modelViewMatrix.value.copy(this._tempModelView);
+      this.uniforms.u_viewToModelMatrix.value.copy(this._tempViewToModel);
     }
   }
 
   dispose() {
     const materials = Array.isArray(this.mesh.material) ? this.mesh.material : [this.mesh.material];
     materials.forEach((mat) => mat.dispose());
+    if (this.mesh.customDepthMaterial) this.mesh.customDepthMaterial.dispose();
+    if (this.mesh.customDistanceMaterial) this.mesh.customDistanceMaterial.dispose();
   }
 }

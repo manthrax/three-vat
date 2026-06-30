@@ -149,6 +149,11 @@ function getDefaultTexture() {
   if (!defaultTexture) {
     const data = new Uint8Array([204, 204, 204, 255]); // grey
     defaultTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+
+    defaultTexture.minFilter =
+      defaultTexture.minFilter = THREE.NearestFilter;
+    defaultTexture.generateMipmaps = false;
+
     defaultTexture.needsUpdate = true;
   }
   return defaultTexture;

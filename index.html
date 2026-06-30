@@ -426,9 +426,15 @@
       const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
       dirLight.position.set(5, 15, 8);
       dirLight.castShadow = true;
+      dirLight.shadow.camera.left = -15;
+      dirLight.shadow.camera.right = 15;
+      dirLight.shadow.camera.top = 15;
+      dirLight.shadow.camera.bottom = -15;
+
+
       dirLight.shadow.mapSize.width = 2048;
       dirLight.shadow.mapSize.height = 2048;
-      dirLight.shadow.bias = -0.001;
+      dirLight.shadow.bias = -0.0001;
       scene.add(dirLight);
 
       let css2threecolor = (cssv) => new THREE.Color(cssv.slice(0, -2))
@@ -436,7 +442,13 @@
 
       gridHelper = new THREE.GridHelper(40, 40, "#1b2236", '#1c1e10');
       //gridHelper.position.y = -1.0;
-      scene.add(gridHelper);
+      //scene.add(gridHelper);
+
+      let plane = new THREE.Mesh(new THREE.PlaneGeometry(50, 250), new THREE.MeshStandardMaterial({ color: '#421' }));
+      plane.geometry.rotateX(-Math.PI * .5)
+      plane.receiveShadow = true
+      //plane.position.y -= 1;
+      scene.add(plane)
 
       // UI Listeners
       const playBtn = document.getElementById('play-btn');
@@ -583,6 +595,9 @@
         // Place in row
         if (cfg.posX) vat.mesh.position.x = cfg.posX;
         if (cfg.posY) vat.mesh.position.y = cfg.posY;
+
+        vat.mesh.castShadow = true;
+        vat.mesh.receiveShadow = true;
 
         let effectContainer = new THREE.Object3D();
         effectContainer.add(vat.mesh);
