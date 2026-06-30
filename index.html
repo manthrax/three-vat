@@ -415,8 +415,8 @@
       // Env map
       const pmremGenerator = new THREE.PMREMGenerator(renderer);
       new HDRLoader()
-        .setPath('')
-        .load('./boiler_room_2k.hdr',
+        //.setPath('')
+        .load('boiler_room_2k.hdr',
           function (texture) {
             var envMap = pmremGenerator.fromEquirectangular(texture).texture;
             scene.background = envMap;
