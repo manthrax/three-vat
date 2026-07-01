@@ -297,7 +297,18 @@ export class VATLoader {
     const overrides = Object.assign({}, defaults, {
       pivotMin: new THREE.Vector3(metadata['Pivot Min X'] !== undefined ? metadata['Pivot Min X'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Y'] !== undefined ? metadata['Pivot Min Y'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Z'] !== undefined ? metadata['Pivot Min Z'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0)),
       pivotMax: new THREE.Vector3(metadata['Pivot Max X'] !== undefined ? metadata['Pivot Max X'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Y'] !== undefined ? metadata['Pivot Max Y'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Z'] !== undefined ? metadata['Pivot Max Z'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1)),
+      activePixelsRatio: (
+        metadata['Active Pixels Ratio X'] !== undefined &&
+        metadata['Active Pixels Ratio Y'] !== undefined
+      ) ? new THREE.Vector2(
+        metadata['Active Pixels Ratio X'],
+        metadata['Active Pixels Ratio Y']
+      ) : null,
+      invertFrameV: loadOptions.invertFrameV !== undefined
+        ? Boolean(loadOptions.invertFrameV)
+        : Boolean(metadata['Invert Frame V']),
       particleShardCount: metadata['Particle Shard Count'] || 0,
+      particlePiecesScaleAreInPositionAlpha: Boolean(metadata['Particle Pieces Scale Are In Position Alpha']),
       useSpareColor: Boolean(metadata['Spare Color Texture']),
       usePos2: Boolean(metadata['Two Position Textures']),
       useLookup: metadata['Use Lookup Texture'] !== undefined ? Boolean(metadata['Use Lookup Texture']) : defaults.useLookup,
@@ -309,9 +320,11 @@ export class VATLoader {
     // 2. Load Mesh
     let mesh = null;
     let meshContainer = null;
-    if (assetName.startsWith('demo_')) {
+    const meshAssetName = loadOptions.meshAssetName || assetName;
+
+    if (meshAssetName.startsWith('demo_')) {
       const fbxLoader = new FBXLoader();
-      const fbxUrl = `${rootPath}${assetName}/${assetName.replace('demo_', '')}_mesh.fbx`;
+      const fbxUrl = `${rootPath}${meshAssetName}/${meshAssetName.replace('demo_', '')}_mesh.fbx`;
       const fbx = await fbxLoader.loadAsync(fbxUrl);
       meshContainer = fbx;
       fbx.traverse((node) => {
@@ -324,10 +337,10 @@ export class VATLoader {
       }
     } else {
       const gltfLoader = new GLTFLoader();
-      const baseName = isOpenVat ? assetName.replace('_vat', '') : assetName;
+      const baseName = isOpenVat ? meshAssetName.replace('_vat', '') : meshAssetName;
       const gltfUrl = isOpenVat
-        ? `${rootPath}${assetName}/${baseName}.glb`
-        : `${rootPath}${assetName}/${assetName}_mesh.glb`;
+        ? `${rootPath}${meshAssetName}/${baseName}.glb`
+        : `${rootPath}${meshAssetName}/${meshAssetName}_mesh.glb`;
       console.log('VATLoader: loading GLTF from', gltfUrl, 'isOpenVat:', isOpenVat);
       const gltf = await gltfLoader.loadAsync(gltfUrl);
       meshContainer = gltf.scene;
@@ -443,6 +456,21 @@ export class VATLoader {
         }
       } else {
         textures[key] = getDefaultTexture();
+      }
+    }
+
+    if (!overrides.activePixelsRatio && ['Particles', 'Softbody', 'Rigidbody'].includes(type)) {
+      const posTex = textures.vatPosTex;
+      const texWidth = posTex?.image?.width ?? posTex?.source?.data?.width ?? 0;
+      const texHeight = posTex?.image?.height ?? posTex?.source?.data?.height ?? 0;
+      const frameCount = overrides.frameCount || 0;
+      const vertexCount = overrides.vertexCount || 0;
+      if (texWidth > 0 && texHeight > 0 && vertexCount > 0 && frameCount > 0) {
+        const ratioX = vertexCount / texWidth;
+        const ratioY = frameCount / texHeight;
+        if (ratioX > 0.0 && ratioX <= 1.0 && ratioY > 0.0 && ratioY <= 1.0) {
+          overrides.activePixelsRatio = new THREE.Vector2(ratioX, ratioY);
+        }
       }
     }
 

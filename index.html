@@ -388,8 +388,9 @@
       { name: 'vat3_dynamicMesh', label: 'Dynamic Mesh', posX: 0.0, posY: .5 },
       { name: 'exp_fluid', label: 'Exported Fluid', posX: 4.0, posY: .7, scale: 1},
       { name: 'vat3_particles', label: 'Particles', posX: 8.0, posY: 1, scale: 0.1 },
-      { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 12.0 },
-      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 16.0 }
+      { name: 'exp_particles', label: 'Exported Particles', posX: 12.0, posY: 1, scale: 0.1, meshAssetName: 'vat3_particles', invertFrameV: true },
+      { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 16.0 },
+      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 20.0 }
     ];
 
     async function init() {
@@ -551,7 +552,11 @@
 
       const loadPromises = config.map(async (cfg) => {
         loadingTextEl.innerText = `Loading ${cfg.label}...`;
-        const loadOptions = { isOpenVat: Boolean(cfg.isOpenVat) };
+        const loadOptions = {
+          isOpenVat: Boolean(cfg.isOpenVat),
+          meshAssetName: cfg.meshAssetName,
+          invertFrameV: cfg.invertFrameV
+        };
         const assets = await VATLoader.load('examples/', cfg.name, loadOptions);
 
         let options = { camera };
@@ -559,7 +564,7 @@
         // 1. Resolve material overrides
         let material = Array.isArray(assets.mesh.material) ? assets.mesh.material[0] : assets.mesh.material;
 
-        if (cfg.name === 'vat3_particles') {
+        if (cfg.name === 'vat3_particles' || cfg.name === 'exp_particles') {
           try {
             const textureUrl = `examples/vat3_particles/vat3_particles_col.png`;
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
@@ -567,7 +572,7 @@
             material.map = albedo;
             options.albedoTexture = albedo;
           } catch (e) {
-            console.warn('vat3_particles: albedo texture failed to load', e);
+            console.warn(`${cfg.name}: albedo texture failed to load`, e);
             material = defaultMat.clone();
           }
         } else if (cfg.name === 'vat3_softBody') {

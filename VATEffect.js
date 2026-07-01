@@ -25,6 +25,7 @@ uniform mat4 u_viewToModelMatrix;
 
 // Static inputs
 uniform vec3 u_additionalObjectSpaceOffset;
+uniform vec2 u_activePixelsRatio;
 uniform float u_additionalParticleScaleUniformMultiplier;
 uniform bool u_animateFirstFrame;
 uniform vec3 u_boundMax;
@@ -42,6 +43,7 @@ uniform float u_inputTime;
 uniform bool u_instance;
 uniform float u_instanceCount;
 uniform bool u_instanceUpdateDynamicData;
+uniform bool u_invertFrameV;
 uniform bool u_interframeInterpolation;
 uniform bool u_interpolateColor;
 uniform bool u_interpolateSpareColor;
@@ -81,6 +83,7 @@ uniform float u_vertexCount;
 uniform bool u_dynamicMeshUsesPositionAlphaMask;
 uniform sampler2D u_dynamicMeshFrameCountTex;
 uniform bool u_dynamicMeshHasFrameCountTexture;
+uniform bool u_hasActivePixelsRatioOverride;
 
 // Structs
 struct Vat3_AnimationData {
@@ -160,6 +163,10 @@ float scalarMod(float a, float b) {
 }
 
 vec2 computeActivePixelsRatio(vec3 bMin, vec3 bMax) {
+  if (u_hasActivePixelsRatioOverride) {
+    return u_activePixelsRatio;
+  }
+
   vec3 scaledMin = bMin * 10.0;
   vec3 scaledMax = bMax * 10.0;
   
@@ -277,6 +284,11 @@ Vat3_UVs computeUVs(vec2 texCoord, Vat3_AnimationData animData, bool isHdr, vec2
 
   float finalThisFrameV = isHdr ? (1.0 - clampedThisFrameV) : clampedThisFrameV;
   float finalNextFrameV = isHdr ? (1.0 - clampedNextFrameV) : clampedNextFrameV;
+
+  if (u_invertFrameV) {
+    finalThisFrameV = 1.0 - finalThisFrameV;
+    finalNextFrameV = 1.0 - finalNextFrameV;
+  }
 
   return Vat3_UVs(
     vec2(scaledU, finalNextFrameV),
@@ -559,8 +571,12 @@ Vat3_ParticleScale computeParticleScale(
   float scaleFactor = u_particlePiecesScaleAreInPositionAlpha 
     ? (u_interframeInterpolation ? mix(pScaleData.posAlphaThisFrame, pScaleData.posAlphaNextFrame, interpolation) : pScaleData.posAlphaThisFrame)
     : 1.0;
+
+  float enabledFactor = u_interframeInterpolation
+    ? mix(particleEnabledThisFrame, particleEnabledNextFrame, interpolation)
+    : particleEnabledThisFrame;
   
-  float baseScale = scaleFactor * particleScaleMultiplier;
+  float baseScale = scaleFactor * particleScaleMultiplier * enabledFactor;
   return Vat3_ParticleScale(baseScale, baseScale);
 }
 
@@ -815,8 +831,39 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vec4 colorAndAlpha = interpolateColor(textures.colorThisFrame, textures.colorNextFrame, interpolationAlpha, u_interframeInterpolation, u_interpolateColor);
     vec4 spareColor = interpolateColor(textures.spareColorThisFrame, textures.spareColorNextFrame, interpolationAlpha, u_interframeInterpolation, u_interpolateSpareColor);
     
-    float particleEnabledThisFrame = clamp(sign(length(posThis) - u_originEffectiveRadius), 0.0, 1.0);
-    float particleEnabledNextFrame = clamp(sign(length(posNext) - u_originEffectiveRadius), 0.0, 1.0);
+    float particleEnabledThisFrame = u_particlePiecesScaleAreInPositionAlpha
+      ? clamp(textures.posThisFrame.a, 0.0, 1.0)
+      : clamp(sign(length(posThis) - u_originEffectiveRadius), 0.0, 1.0);
+    float particleEnabledNextFrame = u_particlePiecesScaleAreInPositionAlpha
+      ? clamp(textures.posNextFrame.a, 0.0, 1.0)
+      : clamp(sign(length(posNext) - u_originEffectiveRadius), 0.0, 1.0);
+
+    // Do not blend the tail of the clip into frame 0 for lifecycle-driven
+    // particles. It causes the first instant of a loop to inherit the last
+    // frame's cloud instead of restarting from the authored hidden state.
+    if (u_particlePiecesScaleAreInPositionAlpha && animData.currentFramePlusOne >= animData.frameCount) {
+      interpolationAlpha = 0.0;
+    }
+
+    // Across alive/dead boundaries, do not interpolate lifecycle state.
+    // Particles should stay fully hidden until their spawn frame and should
+    // not preview their future position during the dead->alive transition.
+    // Likewise, they should not lerp toward the origin while dying.
+    if (u_particlePiecesScaleAreInPositionAlpha) {
+      if (particleEnabledThisFrame != particleEnabledNextFrame) {
+        interpolationAlpha = 0.0;
+      }
+
+      if (particleEnabledThisFrame > 0.0 && particleEnabledNextFrame <= 0.0) {
+        posNext = posThis;
+      }
+    }
+
+    float particleVisibility = u_interframeInterpolation
+      ? mix(particleEnabledThisFrame, particleEnabledNextFrame, interpolationAlpha)
+      : particleEnabledThisFrame;
+    colorAndAlpha.a *= particleVisibility;
+    spareColor.a *= particleVisibility;
     
     Vat3_VelocityData velocityData = calculateVelocity(
       posNext, posThis, colorAndAlpha, u_modelViewMatrix, u_perParticleRandomVelocityScale,
@@ -1090,6 +1137,7 @@ export class VATEffect {
       u_viewToModelMatrix: { value: new THREE.Matrix4() },
 
       u_additionalObjectSpaceOffset: { value: this.vatConfig.staticInputs.additionalObjectSpaceOffset || new THREE.Vector3(0, 0, 0) },
+      u_activePixelsRatio: { value: this.vatConfig.staticInputs.activePixelsRatio || new THREE.Vector2(1.0, 1.0) },
       u_additionalParticleScaleUniformMultiplier: { value: this.vatConfig.staticInputs.additionalParticleScaleUniformMultiplier !== undefined ? this.vatConfig.staticInputs.additionalParticleScaleUniformMultiplier : 1.0 },
       u_animateFirstFrame: { value: Boolean(this.vatConfig.staticInputs.animateFirstFrame) },
       u_boundMax: { value: this.vatConfig.staticInputs.boundMax },
@@ -1107,6 +1155,7 @@ export class VATEffect {
       u_instance: { value: Boolean(this.vatConfig.staticInputs.instance) },
       u_instanceCount: { value: this.vatConfig.staticInputs.instanceCount || 0.0 },
       u_instanceUpdateDynamicData: { value: Boolean(this.vatConfig.staticInputs.instanceUpdateDynamicData) },
+      u_invertFrameV: { value: Boolean(this.vatConfig.staticInputs.invertFrameV) },
       u_interframeInterpolation: { value: this.vatConfig.staticInputs.interframeInterpolation !== undefined ? Boolean(this.vatConfig.staticInputs.interframeInterpolation) : true },
       u_interpolateColor: { value: this.vatConfig.staticInputs.interpolateColor !== undefined ? Boolean(this.vatConfig.staticInputs.interpolateColor) : true },
       u_interpolateSpareColor: { value: this.vatConfig.staticInputs.interpolateSpareColor !== undefined ? Boolean(this.vatConfig.staticInputs.interpolateSpareColor) : true },
@@ -1145,7 +1194,8 @@ export class VATEffect {
       u_vertexCount: { value: this.vatConfig.staticInputs.vertexCount },
       u_dynamicMeshUsesPositionAlphaMask: { value: Boolean(this.vatConfig.staticInputs.dynamicMeshUsesPositionAlphaMask) },
       u_dynamicMeshFrameCountTex: { value: dynamicMeshFrameCountTexture },
-      u_dynamicMeshHasFrameCountTexture: { value: sourceDynamicMeshFrameVertexCounts.length > 0 }
+      u_dynamicMeshHasFrameCountTexture: { value: sourceDynamicMeshFrameVertexCounts.length > 0 },
+      u_hasActivePixelsRatioOverride: { value: Boolean(this.vatConfig.staticInputs.activePixelsRatio) }
     };
 
     // Particles default albedo map if texture is set in options

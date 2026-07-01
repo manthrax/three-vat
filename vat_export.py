@@ -14,6 +14,8 @@ import json
 import os
 import mathutils
 
+_vat_sync_in_progress = False
+
 
 def normalize_export_path(path_value):
     if not path_value:
@@ -39,7 +41,7 @@ def normalize_export_path(path_value):
 
 
 def sanitize_asset_name(name_value):
-    name = (name_value or "").strip()
+    name = (name_value or "").strip().replace('.', '_')
     if not name:
         raise ValueError("Asset name is empty.")
 
@@ -100,6 +102,109 @@ def choose_texture_width(vertex_count, max_width):
     width = min(max(vertex_count, 3), max(max_width, 3))
     width -= (width % 3)
     return max(width, 3)
+
+
+def get_scene_fps(scene):
+    if not scene:
+        return 24.0
+    fps = float(getattr(scene.render, "fps", 24))
+    fps_base = float(getattr(scene.render, "fps_base", 1.0))
+    if fps_base == 0.0:
+        fps_base = 1.0
+    return fps / fps_base
+
+
+def infer_asset_name_from_object(obj):
+    if not obj:
+        return "vat_export"
+    return sanitize_asset_name(obj.name)
+
+
+def infer_vat_mode_from_object(obj):
+    if not obj:
+        return 'SOFT_BODY'
+
+    for modifier in getattr(obj, "modifiers", []):
+        if modifier.type == 'FLUID':
+            return 'FLUID'
+
+    if any(psys.settings.type in {'EMITTER', 'HAIR'} for psys in getattr(obj, "particle_systems", [])):
+        return 'PARTICLES'
+
+    if getattr(obj, "rigid_body", None) is not None:
+        return 'RIGID'
+
+    if any(child.type == 'MESH' for child in getattr(obj, "children", [])):
+        return 'RIGID'
+
+    for modifier in getattr(obj, "modifiers", []):
+        if modifier.type in {'SOFT_BODY', 'CLOTH'}:
+            return 'SOFT_BODY'
+
+    return 'SOFT_BODY'
+
+
+def on_asset_name_update(self, context):
+    self.asset_name_customized = bool(self.asset_name and self.asset_name != self.last_inferred_asset_name)
+
+
+def on_vat_mode_update(self, context):
+    self.vat_mode_customized = self.vat_mode != self.last_inferred_vat_mode
+
+
+def sync_props_from_selection(context=None, scene=None, obj=None):
+    global _vat_sync_in_progress
+
+    if _vat_sync_in_progress:
+        return
+
+    if context is None:
+        context = bpy.context
+
+    scene = scene or (context.scene if context else None)
+    props = getattr(scene, "vat_props", None) if scene else None
+    obj = obj or (context.active_object if context else None)
+    if not props or not obj:
+        return
+
+    _vat_sync_in_progress = True
+    try:
+        inferred_name = infer_asset_name_from_object(obj)
+        inferred_mode = infer_vat_mode_from_object(obj)
+        object_key = obj.name_full
+
+        object_changed = props.last_inferred_object != object_key
+        props.last_inferred_object = object_key
+        props.last_inferred_asset_name = inferred_name
+        props.last_inferred_vat_mode = inferred_mode
+
+        if object_changed:
+            if not props.asset_name_customized or not props.asset_name:
+                props.asset_name = inferred_name
+            if not props.vat_mode_customized:
+                props.vat_mode = inferred_mode
+        else:
+            if not props.asset_name_customized and props.asset_name != inferred_name:
+                props.asset_name = inferred_name
+            if not props.vat_mode_customized and props.vat_mode != inferred_mode:
+                props.vat_mode = inferred_mode
+    finally:
+        _vat_sync_in_progress = False
+
+
+def vat_selection_sync_handler(scene, depsgraph):
+    context = bpy.context
+    active_scene = context.scene if context else scene
+    active_object = context.active_object if context else None
+
+    if not active_scene or not active_object:
+        return
+
+    try:
+        sync_props_from_selection(context=context, scene=active_scene, obj=active_object)
+    except Exception:
+        # Avoid breaking Blender's handler loop if context is temporarily invalid.
+        pass
 
 class OBJECT_OT_export_vat(bpy.types.Operator):
     bl_idname = "object.export_vat"
@@ -304,6 +409,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             global_max,
             out_dir,
             asset_name,
+            context.scene,
             props,
             extra_fields={"Frame Vertex Counts": frame_vertex_counts}
         )
@@ -352,7 +458,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self.save_texture(rot_archive, "rot", out_dir, asset_name, props)
         self._progress_advance("Writing soft body metadata...")
-        self.save_json("Softbody", total, vertex_count, global_min, global_max, out_dir, asset_name, props)
+        self.save_json("Softbody", total, vertex_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
     def export_rigid_body(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name):
         self.report({'INFO'}, "Extracting Rigid Body chunks...")
@@ -388,35 +494,64 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self.save_texture(rot_archive, "rot", out_dir, asset_name, props)
         self._progress_advance("Writing rigid body metadata...")
-        self.save_json("Rigidbody", total, chunk_count, global_min, global_max, out_dir, asset_name, props)
+        self.save_json("Rigidbody", total, chunk_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
     def export_particles(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name):
         self.report({'INFO'}, "Extracting Particle billboard paths...")
         self._progress_advance("Sampling particle frames...")
-        # Check active particle systems on active object
-        psys = obj.particle_systems.active if obj.particle_systems else None
-        if not psys:
+        if not obj.particle_systems:
             self.report({'ERROR'}, "No active particle system found on object.")
-            return
+            raise ValueError("No particle systems found on the selected object.")
 
-        part_count = len(psys.particles)
-        pos_archive = np.zeros((total, part_count, 3), dtype=np.float32)
+        source_psys = obj.particle_systems.active or obj.particle_systems[0]
+        if not source_psys:
+            self.report({'ERROR'}, "No active particle system found on object.")
+            raise ValueError("No active particle system found on the selected object.")
+
+        particle_count = 0
+        saw_live_particle = False
+        for f in range(start, end + 1):
+            context.scene.frame_set(f)
+            eval_obj = obj.evaluated_get(depsgraph)
+            eval_psys = eval_obj.particle_systems.get(source_psys.name)
+            if not eval_psys:
+                continue
+
+            particle_count = max(particle_count, len(eval_psys.particles))
+            if any(getattr(part, "alive_state", 'UNBORN') == 'ALIVE' for part in eval_psys.particles):
+                saw_live_particle = True
+
+        if particle_count <= 0:
+            raise ValueError("Particle system contains no evaluated particles in the requested frame range.")
+
+        if not saw_live_particle:
+            raise ValueError("Particle system has no live particles in the requested frame range.")
+
+        pos_archive = np.zeros((total, particle_count, 4), dtype=np.float32)
 
         global_min = np.array([1e10, 1e10, 1e10])
         global_max = np.array([-1e10, -1e10, -1e10])
 
         for idx, f in enumerate(range(start, end + 1)):
             context.scene.frame_set(f)
-            for p_idx, part in enumerate(psys.particles):
+            eval_obj = obj.evaluated_get(depsgraph)
+            eval_psys = eval_obj.particle_systems.get(source_psys.name)
+            if not eval_psys:
+                continue
+
+            for p_idx, part in enumerate(eval_psys.particles):
+                if getattr(part, "alive_state", 'UNBORN') != 'ALIVE':
+                    continue
                 pos = part.location
-                pos_archive[idx, p_idx] = [pos.x, pos.y, pos.z]
+                pos_archive[idx, p_idx, 0:3] = [pos.x, pos.y, pos.z]
+                pos_archive[idx, p_idx, 3] = 1.0
                 global_min = np.minimum(global_min, pos)
                 global_max = np.maximum(global_max, pos)
 
         self._progress_advance("Writing particle textures...")
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self._progress_advance("Writing particle metadata...")
-        self.save_json("Particles", total, part_count, global_min, global_max, out_dir, asset_name, props)
+        self.save_json("Particles", total, particle_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
     def export_dynamic_mesh_glb(self, context, initial_positions, triangle_count, out_dir, asset_name, texture_width, texture_height, rows_per_frame):
         vertex_count = triangle_count * 3
@@ -543,8 +678,9 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         img.save()
         bpy.data.images.remove(img)
 
-    def save_json(self, vat_type, frames, vertices, g_min, g_max, out_dir, name, props, extra_fields=None):
-        axis_system = "Right-Handed Y-Up" if props.export_y_up else "Right-Handed Z-Up"
+    def save_json(self, vat_type, frames, vertices, g_min, g_max, out_dir, name, scene, props, extra_fields=None):
+        axis_system = "Right-Handed Y-Up"
+        export_fps = get_scene_fps(scene)
 
         # Format matching Houdini native VAT side-car schema
         entry = {
@@ -552,9 +688,12 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             "Name": name,
             "Axis System": axis_system,
             "Frame Count": frames,
-            "Houdini FPS": float(props.vat_fps),
+            "Houdini FPS": float(export_fps),
             "Use HDR Textures": 1 if props.export_hdr_textures else 0,
             "Vertex Count": vertices,
+            "Active Pixels Ratio X": 1.0,
+            "Active Pixels Ratio Y": 1.0,
+            "Invert Frame V": True,
             "Bound Min X": float(g_min[0]),
             "Bound Min Y": float(g_min[1]),
             "Bound Min Z": float(g_min[2]),
@@ -569,6 +708,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             "Pivot Max Z": 1.0,
             "Spare Color Texture": 0,
             "Two Position Textures": 0,
+            "Particle Pieces Scale Are In Position Alpha": True if vat_type == "Particles" else False,
             "Use Lookup Texture": 0 if vat_type == "DynamicMesh" else 1,
             "Dynamic Mesh Packed Position Alpha Mask": True if vat_type == "DynamicMesh" else False,
             "Legacy Format": False
@@ -595,12 +735,8 @@ class VATProperties(bpy.types.PropertyGroup):
     asset_name: bpy.props.StringProperty(
         name="Asset Name",
         description="Folder and file basename for exported assets",
-        default="vat_export"
-    )
-    export_y_up: bpy.props.BoolProperty(
-        name="Y-Up",
-        description="Emit metadata as Right-Handed Y-Up instead of Right-Handed Z-Up",
-        default=False
+        default="vat_export",
+        update=on_asset_name_update
     )
     export_hdr_textures: bpy.props.BoolProperty(
         name="HDR Textures",
@@ -623,9 +759,14 @@ class VATProperties(bpy.types.PropertyGroup):
             ('RIGID', "Rigid Body / Chunks", "Instance-based pivot tracking for fracturing simulations"),
             ('PARTICLES', "Particles", "Instance-based particle points")
         ],
-        default='FLUID'
+        default='SOFT_BODY',
+        update=on_vat_mode_update
     )
-    vat_fps: bpy.props.IntProperty(name="FPS", default=30)
+    asset_name_customized: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
+    vat_mode_customized: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
+    last_inferred_object: bpy.props.StringProperty(default="", options={'HIDDEN'})
+    last_inferred_asset_name: bpy.props.StringProperty(default="", options={'HIDDEN'})
+    last_inferred_vat_mode: bpy.props.StringProperty(default="SOFT_BODY", options={'HIDDEN'})
 
 class VIEW3D_PT_vat_panel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
@@ -637,17 +778,20 @@ class VIEW3D_PT_vat_panel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
         props = scene.vat_props
+        active_object = context.active_object
         
         col = layout.column(align=True)
+        if active_object:
+            col.label(text=f"Selected: {active_object.name}")
+            col.label(text="Asset name and VAT mode auto-fill from selection until edited.")
         col.prop(props, "frame_start")
         col.prop(props, "frame_end")
         col.prop(props, "export_path")
         col.prop(props, "asset_name")
-        col.prop(props, "export_y_up")
         col.prop(props, "export_hdr_textures")
         col.prop(props, "max_texture_width")
         col.prop(props, "vat_mode")
-        col.prop(props, "vat_fps")
+        col.label(text=f"Sampling at scene FPS: {get_scene_fps(scene):.3f}")
         
         layout.separator()
         layout.operator("object.export_vat", icon='RENDER_STILL')
@@ -662,8 +806,16 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.vat_props = bpy.props.PointerProperty(type=VATProperties)
+    if vat_selection_sync_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(vat_selection_sync_handler)
+    try:
+        sync_props_from_selection()
+    except Exception:
+        pass
 
 def unregister():
+    if vat_selection_sync_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(vat_selection_sync_handler)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.vat_props
