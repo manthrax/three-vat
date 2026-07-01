@@ -160,39 +160,80 @@ function getDefaultTexture() {
 }
 
 export class VATLoader {
-  static async load(rootPath, assetName) {
+  static async load(rootPath, assetName, loadOptions = {}) {
     if (!rootPath.endsWith('/')) {
       rootPath += '/';
     }
 
-    // 1. Fetch metadata JSON
-    const metadataUrl = `${rootPath}${assetName}/${assetName}_data.json`;
+    const isOpenVat = Boolean(loadOptions.isOpenVat);
+    let metadataUrl;
+
+    if (isOpenVat) {
+      const baseName = loadOptions.gltfName || assetName.replace('_vat', '');
+      metadataUrl = `${rootPath}${assetName}/${baseName}-remap_info.json`;
+    } else {
+      metadataUrl = `${rootPath}${assetName}/${assetName}_data.json`;
+    }
+
     const metadataResponse = await fetch(metadataUrl);
     if (!metadataResponse.ok) {
-      throw new Error(`VATLoader: failed to load metadata: ${metadataResponse.statusText}`);
+      throw new Error(`VATLoader: failed to load metadata at: ${metadataUrl}`);
     }
+
     const metadataArray = await metadataResponse.json();
-    const metadata = Object.assign({}, metadataArray[0]);
+    const metadataRaw = Array.isArray(metadataArray) ? metadataArray[0] : metadataArray;
+    const metadata = Object.assign({}, metadataRaw);
 
-    // Process metadata
-    const typeStr = metadata['VAT Type'];
-    if (!typeStr) throw new Error('VAT Type is required in metadata');
-    // Normalize type string
-    const type = typeStr.charAt(0).toUpperCase() + typeStr.slice(1).toLowerCase(); // e.g. "softbody" -> "Softbody"
+    let type = 'Softbody';
+    let name = assetName;
+    let isHdrVal = true;
+    let framesVal = 1;
+    let boundMinVal = new THREE.Vector3(0, 0, 0);
+    let boundMaxVal = new THREE.Vector3(1, 1, 1);
+    let axisSystemVal = 'Right-Handed Y-Up';
 
-    const name = metadata['Name'] || assetName;
+    if (isOpenVat) {
+      // Decode OpenVAT properties
+      type = 'Softbody'; // Blender OpenVAT currently exports morph softbody
+      const remap = metadata['os-remap'] || {};
+      framesVal = remap['Frames'] || 1;
+      const minArr = remap['Min'] || [0, 0, 0];
+      const maxArr = remap['Max'] || [1, 1, 1];
+      boundMinVal.set(minArr[0], minArr[1], minArr[2]);
+      boundMaxVal.set(maxArr[0], maxArr[1], maxArr[2]);
+      isHdrVal = true; // OpenVAT always exports position as HDR EXR
+      name = assetName;
+    } else {
+      const typeStr = metadata['VAT Type'] || 'Softbody';
+      type = typeStr.charAt(0).toUpperCase() + typeStr.slice(1).toLowerCase();
+      name = metadata['Name'] || assetName;
+      framesVal = metadata['Frame Count'] || 1;
+      boundMinVal.set(
+        metadata['Bound Min X'] !== undefined ? metadata['Bound Min X'] : 0,
+        metadata['Bound Min Y'] !== undefined ? metadata['Bound Min Y'] : 0,
+        metadata['Bound Min Z'] !== undefined ? metadata['Bound Min Z'] : 0
+      );
+      boundMaxVal.set(
+        metadata['Bound Max X'] !== undefined ? metadata['Bound Max X'] : 1,
+        metadata['Bound Max Y'] !== undefined ? metadata['Bound Max Y'] : 1,
+        metadata['Bound Max Z'] !== undefined ? metadata['Bound Max Z'] : 1
+      );
+      isHdrVal = Boolean(metadata['Use HDR Textures']);
+      axisSystemVal = metadata['Axis System'] || 'Right-Handed Y-Up';
+    }
+
     // Standard defaults
     const defaults = {
       additionalObjectSpaceOffset: new THREE.Vector3(0, 0, 0),
       additionalParticleScaleUniformMultiplier: 1.0,
       animateFirstFrame: false,
-      boundMin: new THREE.Vector3(0, 0, 0),
-      boundMax: new THREE.Vector3(1, 1, 1),
+      boundMin: boundMinVal,
+      boundMax: boundMaxVal,
       computeSpinfromHeadingVector: false,
       displayFrame: 0,
       enablePlayback: true,
-      frameCount: 1,
-      frameRate: 30,
+      frameCount: framesVal,
+      frameRate: metadata['Houdini FPS'] || 30,
       gameTimeAtFirstFrame: 0,
       globalParticlePiecesScaleMultiplier: 1,
       hideParticlesOverlappingObjectOrigin: true,
@@ -205,7 +246,7 @@ export class VATLoader {
       interpolateSpareColor: true,
       isColorTexHdr: true,
       isLookupTexHdr: false,
-      isTexHdr: false,
+      isTexHdr: isHdrVal,
       noLerping: false,
       originEffectiveRadius: 1,
       particleHeightBaseScale: 0.5,
@@ -222,7 +263,7 @@ export class VATLoader {
       playbackSpeed: 1.0,
       scalebyVelocityAmount: 0,
       spinFromHeading: false,
-      stretchByVelocity: false,//true,
+      stretchByVelocity: false,
       stretchByVelocityAmount: 1.0,
       supportSurfaceNormalMaps: true,
       surfaceNormals: true,
@@ -234,9 +275,10 @@ export class VATLoader {
       useParticleBillboarding: true,
       useParticleVelocitySpin: false,
       usePos2: false,
-      useRightHandedCoordinates: true,
+      axisSystem: axisSystemVal,
+      useRightHandedCoordinates: axisSystemVal.startsWith('Right-Handed'),
       useSpareColor: false,
-      vertexCount: 0
+      vertexCount: metadata['Vertex Count'] || 0
     };
 
     // Variant overrides
@@ -248,24 +290,19 @@ export class VATLoader {
       defaults.surfaceNormals = true;
       defaults.useCompressedNormals = false;
     } else if (type === 'Softbody') {
-      defaults.useCompressedNormals = Boolean(metadata['Use HDR Textures']);
+      defaults.useCompressedNormals = isHdrVal;
     }
 
     // Merge metadata
     const overrides = Object.assign({}, defaults, {
-      useRightHandedCoordinates: metadata['Axis System'] === 'Right-Handed Y-Up',
-      boundMin: new THREE.Vector3(metadata['Bound Min X'] !== undefined ? metadata['Bound Min X'] : 0, metadata['Bound Min Y'] !== undefined ? metadata['Bound Min Y'] : 0, metadata['Bound Min Z'] !== undefined ? metadata['Bound Min Z'] : 0),
-      boundMax: new THREE.Vector3(metadata['Bound Max X'] !== undefined ? metadata['Bound Max X'] : 1, metadata['Bound Max Y'] !== undefined ? metadata['Bound Max Y'] : 1, metadata['Bound Max Z'] !== undefined ? metadata['Bound Max Z'] : 1),
       pivotMin: new THREE.Vector3(metadata['Pivot Min X'] !== undefined ? metadata['Pivot Min X'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Y'] !== undefined ? metadata['Pivot Min Y'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0), metadata['Pivot Min Z'] !== undefined ? metadata['Pivot Min Z'] : (metadata['Pivot Min'] !== undefined ? metadata['Pivot Min'] : 0)),
       pivotMax: new THREE.Vector3(metadata['Pivot Max X'] !== undefined ? metadata['Pivot Max X'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Y'] !== undefined ? metadata['Pivot Max Y'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1), metadata['Pivot Max Z'] !== undefined ? metadata['Pivot Max Z'] : (metadata['Pivot Max'] !== undefined ? metadata['Pivot Max'] : 1)),
-      frameCount: metadata['Frame Count'] || 1,
-      frameRate: metadata['Houdini FPS'] || 30,
       particleShardCount: metadata['Particle Shard Count'] || 0,
       useSpareColor: Boolean(metadata['Spare Color Texture']),
       usePos2: Boolean(metadata['Two Position Textures']),
-      isTexHdr: Boolean(metadata['Use HDR Textures']),
-      vertexCount: metadata['Vertex Count'] || 0,
-      isColorTexHdr: Boolean(metadata['Use HDR Textures']),
+      useLookup: metadata['Use Lookup Texture'] !== undefined ? Boolean(metadata['Use Lookup Texture']) : defaults.useLookup,
+      dynamicMeshUsesPositionAlphaMask: Boolean(metadata['Dynamic Mesh Packed Position Alpha Mask']),
+      dynamicMeshFrameVertexCounts: Array.isArray(metadata['Frame Vertex Counts']) ? metadata['Frame Vertex Counts'] : [],
       legacy: Boolean(metadata['Legacy Format'])
     });
 
@@ -287,7 +324,11 @@ export class VATLoader {
       }
     } else {
       const gltfLoader = new GLTFLoader();
-      const gltfUrl = `${rootPath}${assetName}/${assetName}_mesh.glb`;
+      const baseName = isOpenVat ? assetName.replace('_vat', '') : assetName;
+      const gltfUrl = isOpenVat
+        ? `${rootPath}${assetName}/${baseName}.glb`
+        : `${rootPath}${assetName}/${assetName}_mesh.glb`;
+      console.log('VATLoader: loading GLTF from', gltfUrl, 'isOpenVat:', isOpenVat);
       const gltf = await gltfLoader.loadAsync(gltfUrl);
       meshContainer = gltf.scene;
       gltf.scene.traverse((node) => {
@@ -352,7 +393,7 @@ export class VATLoader {
         key === 'vatPosTex' ||
         (key === 'vatColTex') ||
         (key === 'vatRotTex' && type !== 'Particles') ||
-        (key === 'vatLookupTex' && type === 'Dynamicmesh') ||
+        (key === 'vatLookupTex' && overrides.useLookup && type === 'Dynamicmesh') ||
         (key === 'vatPos2Tex' && overrides.usePos2) ||
         (key === 'vatSpareColTex' && overrides.useSpareColor);
 
@@ -363,7 +404,11 @@ export class VATLoader {
         const format = useHdr ? 'exr' : 'png';
         const suffix = suffixMapping[key];
         const baseName = assetName.startsWith('demo_') ? assetName.replace('demo_', '') : assetName;
-        const path = `${rootPath}${assetName}/${baseName}${suffix}.${format}`;
+
+        // OpenVAT exports a single position EXR named exactly after the asset (e.g. Cube_vat.exr)
+        const path = (isOpenVat && key === 'vatPosTex')
+          ? `${rootPath}${assetName}/${assetName}.${format}`
+          : `${rootPath}${assetName}/${baseName}${suffix}.${format}`;
 
         try {
           let texture;

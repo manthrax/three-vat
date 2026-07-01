@@ -78,6 +78,9 @@ uniform bool u_usePos2;
 uniform bool u_useRightHandedCoordinates;
 uniform bool u_useSpareColor;
 uniform float u_vertexCount;
+uniform bool u_dynamicMeshUsesPositionAlphaMask;
+uniform sampler2D u_dynamicMeshFrameCountTex;
+uniform bool u_dynamicMeshHasFrameCountTexture;
 
 // Structs
 struct Vat3_AnimationData {
@@ -281,6 +284,44 @@ Vat3_UVs computeUVs(vec2 texCoord, Vat3_AnimationData animData, bool isHdr, vec2
   );
 }
 
+Vat3_UVs computePackedDynamicMeshUVs(vec2 texCoord, Vat3_AnimationData animData, bool isHdr) {
+  ivec2 texSize = textureSize(u_vatPosTex, 0);
+  float texWidth = float(max(texSize.x, 1));
+  float texHeight = float(max(texSize.y, 1));
+  float rowsPerFrame = max(texHeight / max(u_frameCount, 1.0), 1.0);
+
+  float baseCol = floor(texCoord.x * texWidth);
+  float baseLocalRow = floor(texCoord.y * rowsPerFrame);
+
+  float currentFrameIndex = floor(animData.currentFramePlusOne - 1.0);
+  float nextFrameIndex = floor(animData.currentFramePlusOne);
+  currentFrameIndex = mod(currentFrameIndex, max(u_frameCount, 1.0));
+  nextFrameIndex = mod(nextFrameIndex, max(u_frameCount, 1.0));
+
+  // Blender-authored packed exports are written in ascending frame order in
+  // texture memory, while the sampled V direction for this path effectively
+  // walks the atlas upside-down unless we reverse the frame row selection here.
+  currentFrameIndex = max(u_frameCount - 1.0, 0.0) - currentFrameIndex;
+  nextFrameIndex = max(u_frameCount - 1.0, 0.0) - nextFrameIndex;
+
+  float currentGlobalRow = currentFrameIndex * rowsPerFrame + baseLocalRow;
+  float nextGlobalRow = nextFrameIndex * rowsPerFrame + baseLocalRow;
+
+  float u = (baseCol + 0.5) / texWidth;
+  float vThis = (currentGlobalRow + 0.5) / texHeight;
+  float vNext = (nextGlobalRow + 0.5) / texHeight;
+
+  if (isHdr) {
+    vThis = 1.0 - vThis;
+    vNext = 1.0 - vNext;
+  }
+
+  return Vat3_UVs(
+    vec2(u, vNext),
+    vec2(u, vThis)
+  );
+}
+
 Vat3_TexturesData sampleVat3TexturesFromParams(
   vec2 thisFrameUv, vec2 nextFrameUv, bool noLerp,
   bool useLookup, bool usePos2, bool useSpareColor
@@ -386,6 +427,35 @@ vec2 resolveVatSurfaceUv(vec4 colorPayload, float posAlphaThisFrame, bool useCol
 
 bool isVatPaddingVertex(vec2 texCoord, float frameCount) {
   return texCoord.y > (1.0 - 0.5 / frameCount);
+}
+
+int getDynamicMeshFrameVertexCount(int frameIndex) {
+  ivec2 texSize = textureSize(u_dynamicMeshFrameCountTex, 0);
+  int width = max(texSize.x, 1);
+  int safeIndex = clamp(frameIndex, 0, width - 1);
+  vec2 uv = vec2((float(safeIndex) + 0.5) / float(width), 0.5);
+  vec4 sampleValue = vatLoad(u_dynamicMeshFrameCountTex, uv);
+
+  float r = floor(sampleValue.r * 255.0 + 0.5);
+  float g = floor(sampleValue.g * 255.0 + 0.5);
+  float b = floor(sampleValue.b * 255.0 + 0.5);
+  return int(r + g * 256.0 + b * 65536.0);
+}
+
+int getDynamicMeshLocalVertexIndex(vec2 baseUv) {
+  ivec2 texSize = textureSize(u_vatPosTex, 0);
+  int width = max(texSize.x, 1);
+  int height = max(texSize.y, 1);
+  int frameCountInt = max(int(floor(u_frameCount + 0.5)), 1);
+  int rowsPerFrame = max(height / frameCountInt, 1);
+  int col = clamp(int(floor(baseUv.x * float(width))), 0, width - 1);
+  int localRow = clamp(int(floor(baseUv.y * float(rowsPerFrame))), 0, rowsPerFrame - 1);
+  return localRow * width + col;
+}
+
+int getDynamicMeshLocalTriangleStart(vec2 baseUv) {
+  int localVertexIndex = getDynamicMeshLocalVertexIndex(baseUv);
+  return (localVertexIndex / 3) * 3;
 }
 
 Vat3_VelocityData calculateVelocity(
@@ -570,14 +640,23 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
   
   if (variant == 0) { // Dynamicmesh
     vec2 activeRatio = vec2(1.0); // Dynamic mesh active ratio is 1.0
-    Vat3_UVs uvs = computeUVs(uv, animData, u_isTexHdr, activeRatio);
+    Vat3_UVs uvs;
+    if (u_useLookup) {
+      uvs = computeUVs(uv, animData, u_isLookupTexHdr, activeRatio);
+    } else {
+      uvs = computePackedDynamicMeshUVs(uv, animData, u_isTexHdr);
+    }
     float interpolationAlpha = shouldInterpolate ? fract(animData.currentFrame) : 0.0;
-    
-    vec4 lookupThis = vatLoad(u_vatLookupTex, uvs.thisFrameUv);
-    vec4 lookupNext = shouldInterpolate ? vatLoad(u_vatLookupTex, uvs.nextFrameUv) : lookupThis;
-    
-    vec2 decodedThisUv = decodeVatLookupUv(lookupThis, u_isLookupTexHdr);
-    vec2 decodedNextUv = shouldInterpolate ? decodeVatLookupUv(lookupNext, u_isLookupTexHdr) : decodedThisUv;
+    vec2 decodedThisUv = uvs.thisFrameUv;
+    vec2 decodedNextUv = uvs.nextFrameUv;
+
+    if (u_useLookup) {
+      vec4 lookupThis = vatLoad(u_vatLookupTex, uvs.thisFrameUv);
+      vec4 lookupNext = shouldInterpolate ? vatLoad(u_vatLookupTex, uvs.nextFrameUv) : lookupThis;
+
+      decodedThisUv = decodeVatLookupUv(lookupThis, u_isLookupTexHdr);
+      decodedNextUv = shouldInterpolate ? decodeVatLookupUv(lookupNext, u_isLookupTexHdr) : decodedThisUv;
+    }
     
     Vat3_TexturesData textures = sampleVat3TexturesFromParams(
       decodedThisUv, decodedNextUv, !shouldInterpolate,
@@ -603,13 +682,32 @@ Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 
     vec2 surfaceUv = resolveVatSurfaceUv(colorAndAlpha, textures.posThisFrame.a, u_surfaceUVsfromColorRG);
     
     float animProgress = mix(animData.animProgressThisFrame, animData.animProgressNextFrame, interpolationAlpha);
+    bool isActiveDynamicMeshVertex = true;
+    if (!u_useLookup) {
+      if (u_dynamicMeshUsesPositionAlphaMask) {
+        isActiveDynamicMeshVertex = textures.posThisFrame.a > 0.5;
+        if (shouldInterpolate) {
+          isActiveDynamicMeshVertex = isActiveDynamicMeshVertex && textures.posNextFrame.a > 0.5;
+        }
+      } else if (u_dynamicMeshHasFrameCountTexture) {
+        int frameThisIndex = int(mod(floor(animData.currentFramePlusOne - 1.0), max(u_frameCount, 1.0)));
+        int frameNextIndex = int(mod(floor(animData.currentFramePlusOne), max(u_frameCount, 1.0)));
+        int dynamicMeshLocalTriangleStart = getDynamicMeshLocalTriangleStart(uv);
+        int activeThis = getDynamicMeshFrameVertexCount(frameThisIndex);
+        int activeNext = getDynamicMeshFrameVertexCount(frameNextIndex);
+        isActiveDynamicMeshVertex = (dynamicMeshLocalTriangleStart + 2) < activeThis;
+        if (shouldInterpolate) {
+          isActiveDynamicMeshVertex = isActiveDynamicMeshVertex && (dynamicMeshLocalTriangleStart + 2) < activeNext;
+        }
+      }
+    }
     
     vatOutputs.outAnimationProgress = vec3(animProgress, animData.animProgressThisFrame, animData.animProgressNextFrame);
-    vatOutputs.outPosition = isVatPaddingVertex(uv, u_frameCount) ? vec3(0.0) : finalPos;
+    vatOutputs.outPosition = (!isActiveDynamicMeshVertex || isVatPaddingVertex(uv, u_frameCount)) ? vec3(0.0) : finalPos;
     vatOutputs.outNormal = surface.normal;
     vatOutputs.outTangent = surface.tangent;
     vatOutputs.surfaceUv = surfaceUv;
-    vatOutputs.outColorAndAlpha = colorAndAlpha;
+    vatOutputs.outColorAndAlpha = isActiveDynamicMeshVertex ? colorAndAlpha : vec4(0.0);
     vatOutputs.outSpareColorAndAlpha = spareColor;
     
   } else if (variant == 1) { // Softbody
@@ -974,6 +1072,8 @@ export class VATEffect {
     this._time = 0.0;
     this._enablePlayback = true;
     this._camera = options.camera || null;
+    const sourceDynamicMeshFrameVertexCounts = this.vatConfig.staticInputs.dynamicMeshFrameVertexCounts || [];
+    const dynamicMeshFrameCountTexture = this.createDynamicMeshFrameCountTexture(sourceDynamicMeshFrameVertexCounts);
 
     this.uniforms = {
       u_vatColTex: { value: assets.textures.vatColTex },
@@ -1042,13 +1142,52 @@ export class VATEffect {
       u_usePos2: { value: Boolean(this.vatConfig.staticInputs.usePos2) },
       u_useRightHandedCoordinates: { value: Boolean(this.vatConfig.staticInputs.useRightHandedCoordinates) },
       u_useSpareColor: { value: Boolean(this.vatConfig.staticInputs.useSpareColor) },
-      u_vertexCount: { value: this.vatConfig.staticInputs.vertexCount }
+      u_vertexCount: { value: this.vatConfig.staticInputs.vertexCount },
+      u_dynamicMeshUsesPositionAlphaMask: { value: Boolean(this.vatConfig.staticInputs.dynamicMeshUsesPositionAlphaMask) },
+      u_dynamicMeshFrameCountTex: { value: dynamicMeshFrameCountTexture },
+      u_dynamicMeshHasFrameCountTexture: { value: sourceDynamicMeshFrameVertexCounts.length > 0 }
     };
 
     // Particles default albedo map if texture is set in options
     this._albedoTexture = options.albedoTexture || null;
 
+    this.applyAxisSystemFixup();
     this.initMaterial();
+  }
+
+  createDynamicMeshFrameCountTexture(frameCounts) {
+    const width = Math.max(frameCounts.length, 1);
+    const data = new Uint8Array(width * 4);
+
+    for (let i = 0; i < frameCounts.length; i++) {
+      const count = Math.max(0, Math.floor(frameCounts[i]));
+      data[i * 4 + 0] = count & 255;
+      data[i * 4 + 1] = (count >> 8) & 255;
+      data[i * 4 + 2] = (count >> 16) & 255;
+      data[i * 4 + 3] = 255;
+    }
+
+    const texture = new THREE.DataTexture(data, width, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.flipY = false;
+    texture.generateMipmaps = false;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  applyAxisSystemFixup() {
+    const axisSystem = this.vatConfig?.staticInputs?.axisSystem || 'Right-Handed Y-Up';
+
+    // The runtime expects Houdini-style Y-up samples by default.
+    // Blender-authored exports are emitted as right-handed Z-up, so rotate the
+    // rendered object rather than destructively changing exported data.
+    if (axisSystem === 'Right-Handed Z-Up') {
+      //this.mesh.rotation.x = -Math.PI * 0.5;
+    }
   }
 
   setCamera(camera) {

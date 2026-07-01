@@ -386,9 +386,10 @@
       { name: 'vat3_softBody', label: 'Softbody', posX: -8.0 },
       { name: 'demo_fluid', label: 'Demo Fluid', posX: -4.0, posY: .7 },
       { name: 'vat3_dynamicMesh', label: 'Dynamic Mesh', posX: 0.0, posY: .5 },
-      { name: 'vat3_particles', label: 'Particles', posX: 4.0, posY: 1, scale: 0.1 },
-      { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 8.0 },
-      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 12.0 }
+      { name: 'exp_fluid', label: 'Exported Fluid', posX: 4.0, posY: .7, scale: 1},
+      { name: 'vat3_particles', label: 'Particles', posX: 8.0, posY: 1, scale: 0.1 },
+      { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 12.0 },
+      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 16.0 }
     ];
 
     async function init() {
@@ -550,7 +551,8 @@
 
       const loadPromises = config.map(async (cfg) => {
         loadingTextEl.innerText = `Loading ${cfg.label}...`;
-        const assets = await VATLoader.load('examples/', cfg.name);
+        const loadOptions = { isOpenVat: Boolean(cfg.isOpenVat) };
+        const assets = await VATLoader.load('examples/', cfg.name, loadOptions);
 
         let options = { camera };
 
@@ -579,7 +581,7 @@
             console.warn('vat3_softBody: albedo texture failed to load', e);
             material = defaultMat.clone()
           }
-        } else if (cfg.name === 'demo_fluid') {
+        } else if (cfg.name === 'demo_fluid' || cfg.name === 'exp_fluid') {
           material = defaultMat.clone()
           material.map = null;
 
@@ -639,6 +641,7 @@
         // Place in row
         if (cfg.posX) vat.mesh.position.x = cfg.posX;
         if (cfg.posY) vat.mesh.position.y = cfg.posY;
+        if (cfg.rotX) vat.mesh.rotation.x = cfg.rotX*Math.PI/180;
 
         vat.mesh.castShadow = true;
         vat.mesh.receiveShadow = true;
