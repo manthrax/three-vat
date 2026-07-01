@@ -152,6 +152,31 @@ def convert_blender_quat_to_y_up(quat):
     return conversion @ quat @ conversion.inverted()
 
 
+def transform_positions_with_matrix(vectors, matrix):
+    if matrix is None:
+        return np.asarray(vectors, dtype=np.float32)
+    return np.array(
+        [[*(matrix @ mathutils.Vector(co))] for co in vectors],
+        dtype=np.float32
+    )
+
+
+def transform_normals_with_matrix(vectors, matrix):
+    arr = np.asarray(vectors, dtype=np.float32)
+    if matrix is None:
+        return arr
+
+    normal_matrix = matrix.to_3x3().inverted().transposed()
+    transformed = np.array(
+        [[*(normal_matrix @ mathutils.Vector(no))] for no in arr],
+        dtype=np.float32
+    )
+
+    lengths = np.linalg.norm(transformed, axis=1, keepdims=True)
+    lengths[lengths == 0.0] = 1.0
+    return transformed / lengths
+
+
 def get_scene_fps(scene):
     if not scene:
         return 24.0
@@ -210,6 +235,23 @@ def gather_mesh_descendants(obj):
     return found
 
 
+def filter_deepest_meshes(meshes):
+    mesh_set = set(meshes)
+    filtered = []
+    for mesh in meshes:
+        has_mesh_descendant_in_set = False
+        stack = list(getattr(mesh, "children", []))
+        while stack:
+            child = stack.pop()
+            stack.extend(getattr(child, "children", []))
+            if child in mesh_set:
+                has_mesh_descendant_in_set = True
+                break
+        if not has_mesh_descendant_in_set:
+            filtered.append(mesh)
+    return filtered
+
+
 def has_soft_body_modifier(obj):
     return any(modifier.type in {'SOFT_BODY', 'CLOTH'} for modifier in getattr(obj, "modifiers", []))
 
@@ -221,7 +263,7 @@ def gather_soft_body_sources(obj):
     for child in gather_mesh_descendants(obj):
         if has_soft_body_modifier(child):
             sources.append(child)
-    return sources
+    return filter_deepest_meshes(sources)
 
 
 def get_relative_root_object(context, source_obj, mode):
@@ -547,10 +589,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
             if root_inv:
                 rel_matrix = root_inv @ eval_obj.matrix_world
-                base_positions = np.array(
-                    [[*(rel_matrix @ mathutils.Vector(co))] for co in base_positions],
-                    dtype=np.float32
-                )
+                base_positions = transform_positions_with_matrix(base_positions, rel_matrix)
 
             base_position_parts.append(base_positions)
             eval_obj.to_mesh_clear()
@@ -585,16 +624,16 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                 vertex_cos = np.zeros(source_vertex_count * 3, dtype=np.float32)
                 eval_mesh.vertices.foreach_get("co", vertex_cos)
                 vertex_cos = vertex_cos.reshape(-1, 3)
+                rel_matrix = None
                 if root_inv:
                     rel_matrix = root_inv @ eval_obj.matrix_world
-                    vertex_cos = np.array(
-                        [[*(rel_matrix @ mathutils.Vector(co))] for co in vertex_cos],
-                        dtype=np.float32
-                    )
+                    vertex_cos = transform_positions_with_matrix(vertex_cos, rel_matrix)
 
                 vertex_norms = np.zeros(source_vertex_count * 3, dtype=np.float32)
                 eval_mesh.vertices.foreach_get("normal", vertex_norms)
                 vertex_norms = vertex_norms.reshape(-1, 3)
+                if rel_matrix is not None:
+                    vertex_norms = transform_normals_with_matrix(vertex_norms, rel_matrix)
 
                 vertex_cos_parts.append(vertex_cos)
                 vertex_norm_parts.append(vertex_norms)
@@ -631,7 +670,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         self._progress_advance("Sampling rigid body chunks...")
         # Rigid body exports expect linked chunk duplicates or separate mesh pieces
         # We group children or parent collections to isolate pivot arrays
-        chunks = gather_mesh_descendants(obj)
+        chunks = filter_deepest_meshes(gather_mesh_descendants(obj))
         if not chunks:
             chunks = [obj] # Fallback to active object as single chunk
 
@@ -773,7 +812,9 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         vertices = []
         faces = []
+        vat_vertex_indices = []
         root_inv = relative_root.matrix_world.inverted() if relative_root else None
+        source_vertex_offset = 0
 
         for source_obj in source_objects:
             eval_obj = source_obj.evaluated_get(depsgraph)
@@ -784,11 +825,16 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             if len(eval_mesh.loop_triangles) == 0:
                 eval_mesh.calc_loop_triangles()
 
-            base_vertex = len(vertices)
-            vertices.extend([tuple(vertex.co) for vertex in eval_mesh.vertices])
             for tri in eval_mesh.loop_triangles:
-                faces.append(tuple(base_vertex + vi for vi in tri.vertices))
+                face = []
+                for original_vertex_index in tri.vertices:
+                    output_vertex_index = len(vertices)
+                    vertices.append(tuple(eval_mesh.vertices[original_vertex_index].co))
+                    vat_vertex_indices.append(source_vertex_offset + original_vertex_index)
+                    face.append(output_vertex_index)
+                faces.append(tuple(face))
 
+            source_vertex_offset += len(eval_mesh.vertices)
             eval_obj.to_mesh_clear()
 
         temp_mesh.from_pydata(vertices, [], faces)
@@ -806,7 +852,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                 vertex_index = poly.vertices[loop_offset]
                 uv_layer.data[loop_index].uv = (0.0, 0.0)
                 vat_uv1.data[loop_index].uv = (
-                    texel_center(vertex_index, vertex_count),
+                    texel_center(vat_vertex_indices[vertex_index], vertex_count),
                     texel_center(0, total_frames)
                 )
 
@@ -819,8 +865,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         vertices = []
         faces = []
-        chunk_loop_ranges = []
-        face_offset = 0
+        piece_slots = []
+        piece_pivots = []
 
         for chunk_index, chunk in enumerate(chunks):
             eval_chunk = chunk.evaluated_get(depsgraph)
@@ -845,19 +891,17 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                     pivot.y + scaled_local[1],
                     pivot.z + scaled_local[2],
                 ))
-            base_vertex = len(vertices)
-            vertices.extend(chunk_vertices)
-
-            chunk_face_indices = []
             if len(eval_mesh.loop_triangles) == 0:
                 eval_mesh.calc_loop_triangles()
             for tri in eval_mesh.loop_triangles:
-                face = tuple(base_vertex + vi for vi in tri.vertices)
-                faces.append(face)
-                chunk_face_indices.append(face_offset)
-                face_offset += 1
-
-            chunk_loop_ranges.append((chunk_index, chunk_face_indices, (pivot_y_up[0], pivot_y_up[1], pivot_y_up[2])))
+                face = []
+                for original_vertex_index in tri.vertices:
+                    output_vertex_index = len(vertices)
+                    vertices.append(chunk_vertices[original_vertex_index])
+                    piece_slots.append(chunk_index)
+                    piece_pivots.append((pivot_y_up[0], pivot_y_up[1], pivot_y_up[2]))
+                    face.append(output_vertex_index)
+                faces.append(tuple(face))
             eval_chunk.to_mesh_clear()
 
         temp_mesh.from_pydata(vertices, [], faces)
@@ -868,15 +912,16 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         vat_uv2 = temp_mesh.uv_layers.new(name="VAT_UV2")
         vat_uv3 = temp_mesh.uv_layers.new(name="VAT_UV3")
 
-        for chunk_index, face_indices, pivot in chunk_loop_ranges:
-            slot_uv = (texel_center(chunk_index, len(chunks)), texel_center(0, total_frames))
-            for face_index in face_indices:
-                poly = temp_mesh.polygons[face_index]
-                for loop_index in poly.loop_indices:
-                    uv_layer.data[loop_index].uv = (0.0, 0.0)
-                    vat_uv1.data[loop_index].uv = slot_uv
-                    vat_uv2.data[loop_index].uv = (pivot[0], 0.0)
-                    vat_uv3.data[loop_index].uv = (pivot[1], pivot[2])
+        for poly in temp_mesh.polygons:
+            for loop_offset, loop_index in enumerate(poly.loop_indices):
+                vertex_index = poly.vertices[loop_offset]
+                chunk_index = piece_slots[vertex_index]
+                pivot = piece_pivots[vertex_index]
+                slot_uv = (texel_center(chunk_index, len(chunks)), texel_center(0, total_frames))
+                uv_layer.data[loop_index].uv = (0.0, 0.0)
+                vat_uv1.data[loop_index].uv = slot_uv
+                vat_uv2.data[loop_index].uv = (pivot[0], 0.0)
+                vat_uv3.data[loop_index].uv = (pivot[1], pivot[2])
 
         self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
 

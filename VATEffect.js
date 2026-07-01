@@ -1320,7 +1320,6 @@ export class VATEffect {
     materials.forEach((mat, index) => {
       // Clone standard material to apply specific overrides
       const clonedMat = mat.clone();
-      clonedMat.side = THREE.DoubleSide;
 
       // Configure transparency and depth write based on variant type
       if (this.type === 'Particles') {

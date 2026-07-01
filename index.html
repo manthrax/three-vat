@@ -462,7 +462,8 @@
 
       dirLight.shadow.mapSize.width = 2048;
       dirLight.shadow.mapSize.height = 2048;
-      dirLight.shadow.bias = -0.0001;
+      dirLight.shadow.bias = 0.0;
+      dirLight.shadow.normalBias = 0.02;
       scene.add(dirLight);
 
       let css2threecolor = (cssv) => new THREE.Color(cssv.slice(0, -2))
@@ -575,10 +576,12 @@
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
             material = defaultMat.clone();
             material.map = albedo;
+            material.side = THREE.DoubleSide;
             options.albedoTexture = albedo;
           } catch (e) {
             console.warn(`${cfg.name}: albedo texture failed to load`, e);
             material = defaultMat.clone();
+            material.side = THREE.DoubleSide;
           }
         } else if (cfg.name === 'vat3_softBody') {
           try {
@@ -586,10 +589,12 @@
             const albedo = await new THREE.TextureLoader().loadAsync(textureUrl);
             material = defaultMat.clone();
             material.map = albedo;
+            material.side = THREE.DoubleSide;
             options.albedoTexture = albedo;
           } catch (e) {
             console.warn('vat3_softBody: albedo texture failed to load', e);
             material = defaultMat.clone()
+            material.side = THREE.DoubleSide;
           }
         } else if (cfg.name === 'demo_fluid' || cfg.name === 'exp_fluid') {
           material = defaultMat.clone()
@@ -603,6 +608,10 @@
         } else {
           // Clone to avoid sharing material settings across instances of other classes
           material = defaultMat.clone();
+        }
+
+        if (cfg.name === 'demo_cloth' || cfg.name === 'exp_cloth') {
+          material.side = THREE.DoubleSide;
         }
 
         // 2. Create InstancedMesh with 100 instances (max capacity) extending in negative Z
