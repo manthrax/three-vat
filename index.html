@@ -383,14 +383,19 @@
 
     const config = [
       { name: 'demo_cloth', label: 'Demo Cloth', posX: -12.0, posY: 1 },
-      { name: 'vat3_softBody', label: 'Softbody', posX: -8.0 },
       { name: 'demo_fluid', label: 'Demo Fluid', posX: -4.0, posY: .7 },
+      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 24.0 },
+
+      { name: 'vat3_softBody', label: 'Softbody', posX: -8.0 },
       { name: 'vat3_dynamicMesh', label: 'Dynamic Mesh', posX: 0.0, posY: .5 },
-      { name: 'exp_fluid', label: 'Exported Fluid', posX: 4.0, posY: .7, scale: 1},
       { name: 'vat3_particles', label: 'Particles', posX: 8.0, posY: 1, scale: 0.1 },
-      { name: 'exp_particles', label: 'Exported Particles', posX: 12.0, posY: 1, scale: 0.1, meshAssetName: 'vat3_particles', invertFrameV: true },
       { name: 'vat3_rigidBody', label: 'Rigidbody', posX: 16.0 },
-      { name: 'demo_rigid_body', label: 'Demo Rigidbody', posX: 20.0 }
+
+      { name: 'exp_particles', label: 'Exported Particles', posX: 12.0, posY: 1, scale: 0.1, meshAssetName: 'vat3_particles', invertFrameV: true },
+      { name: 'exp_fluid', label: 'Blender Fluid', posX: 4.0, posY: .7, scale: 1},
+      { name: 'exp_rigidBody', label: 'Blender Rigidbody', posX: 20.0 },
+      { name: 'exp_softBody', label: 'Blender Softbody', posX: 27.0, posY: .7, scale: 1},
+      { name: 'exp_cloth', label: 'Blender Cloth', posX: 30.0, posY: .7, scale: 1},
     ];
 
     async function init() {

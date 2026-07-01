@@ -12,6 +12,7 @@ import bpy
 import numpy as np
 import json
 import os
+import math
 import mathutils
 
 _vat_sync_in_progress = False
@@ -104,6 +105,53 @@ def choose_texture_width(vertex_count, max_width):
     return max(width, 3)
 
 
+def pack_rigid_quaternion(quat):
+    q = np.array([quat.x, quat.y, quat.z, quat.w], dtype=np.float32)
+    dominant_index = int(np.argmax(np.abs(q)))
+
+    # Flip the quaternion so the omitted dominant component is non-negative.
+    # q and -q represent the same rotation, and this matches the shader's
+    # reconstruction path that always solves the missing component as positive.
+    if q[dominant_index] < 0.0:
+        q = -q
+
+    packed = np.zeros(4, dtype=np.float32)
+    packed[3] = dominant_index / 4.0
+
+    # Shader mapping:
+    # 0 => omitted w, 1 => omitted x, 2 => omitted y, 3 => omitted z
+    if dominant_index == 3:
+        packed[3] = 0.0
+        packed[0:3] = [q[0], q[1], q[2]]
+    elif dominant_index == 0:
+        packed[3] = 0.25
+        packed[0:3] = [q[1], q[2], q[3]]
+    elif dominant_index == 1:
+        packed[3] = 0.5
+        packed[0:3] = [q[0], q[2], q[3]]
+    else:
+        packed[3] = 0.75
+        packed[0:3] = [q[0], q[1], q[3]]
+
+    return packed
+
+
+def convert_blender_vec_to_y_up(vec3):
+    return np.array([vec3[0], vec3[2], -vec3[1]], dtype=np.float32)
+
+
+def convert_blender_vectors_to_y_up(vectors):
+    arr = np.asarray(vectors, dtype=np.float32)
+    if arr.size == 0:
+        return np.array(arr, copy=True)
+    return np.stack((arr[:, 0], arr[:, 2], -arr[:, 1]), axis=1).astype(np.float32, copy=False)
+
+
+def convert_blender_quat_to_y_up(quat):
+    conversion = mathutils.Euler((-math.pi * 0.5, 0.0, 0.0), 'XYZ').to_quaternion()
+    return conversion @ quat @ conversion.inverted()
+
+
 def get_scene_fps(scene):
     if not scene:
         return 24.0
@@ -131,17 +179,60 @@ def infer_vat_mode_from_object(obj):
     if any(psys.settings.type in {'EMITTER', 'HAIR'} for psys in getattr(obj, "particle_systems", [])):
         return 'PARTICLES'
 
+    for modifier in getattr(obj, "modifiers", []):
+        if modifier.type in {'SOFT_BODY', 'CLOTH'}:
+            return 'SOFT_BODY'
+
+    for child in gather_mesh_descendants(obj):
+        for modifier in getattr(child, "modifiers", []):
+            if modifier.type in {'SOFT_BODY', 'CLOTH'}:
+                return 'SOFT_BODY'
+
     if getattr(obj, "rigid_body", None) is not None:
         return 'RIGID'
 
     if any(child.type == 'MESH' for child in getattr(obj, "children", [])):
         return 'RIGID'
 
-    for modifier in getattr(obj, "modifiers", []):
-        if modifier.type in {'SOFT_BODY', 'CLOTH'}:
-            return 'SOFT_BODY'
-
     return 'SOFT_BODY'
+
+
+def gather_mesh_descendants(obj):
+    if not obj:
+        return []
+    found = []
+    stack = list(getattr(obj, "children", []))
+    while stack:
+        child = stack.pop()
+        stack.extend(getattr(child, "children", []))
+        if child.type == 'MESH':
+            found.append(child)
+    return found
+
+
+def has_soft_body_modifier(obj):
+    return any(modifier.type in {'SOFT_BODY', 'CLOTH'} for modifier in getattr(obj, "modifiers", []))
+
+
+def gather_soft_body_sources(obj):
+    sources = []
+    if obj and obj.type == 'MESH' and has_soft_body_modifier(obj):
+        sources.append(obj)
+    for child in gather_mesh_descendants(obj):
+        if has_soft_body_modifier(child):
+            sources.append(child)
+    return sources
+
+
+def get_relative_root_object(context, source_obj, mode):
+    if not context or len(context.selected_objects) != 1:
+        return None
+
+    root = context.selected_objects[0]
+    if mode in {'RIGID', 'SOFT_BODY'}:
+        return root
+
+    return None
 
 
 def on_asset_name_update(self, context):
@@ -231,7 +322,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         texture_ext = "exr" if props.export_hdr_textures else "png"
         expected_files = [
             f"{asset_name}_data.json",
-            f"{asset_name}_mesh.glb" if mode == 'FLUID' else None,
+            f"{asset_name}_mesh.glb" if mode in {'FLUID', 'SOFT_BODY', 'RIGID', 'PARTICLES'} else None,
             f"{asset_name}_pos.{texture_ext}",
             f"{asset_name}_rot.{texture_ext}" if mode in {'FLUID', 'SOFT_BODY', 'RIGID'} else None,
         ]
@@ -249,16 +340,33 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         obj = context.active_object
-        
-        if not obj or obj.type != 'MESH':
-            self.report({'ERROR'}, "Active object must be a Mesh.")
-            return {'CANCELLED'}
             
         props = scene.vat_props
         start_frame = props.frame_start
         end_frame = props.frame_end
         total_frames = (end_frame - start_frame) + 1
         mode = props.vat_mode
+        export_obj = obj
+        relative_root = None
+        soft_body_sources = None
+        original_frame = scene.frame_current
+        original_subframe = getattr(scene, "frame_subframe", 0.0)
+
+        if not obj:
+            self.report({'ERROR'}, "Select an object to export.")
+            return {'CANCELLED'}
+
+        if mode == 'SOFT_BODY':
+            soft_body_sources = gather_soft_body_sources(obj)
+            if not soft_body_sources:
+                self.report({'ERROR'}, "Select a soft body mesh or a parent containing one.")
+                return {'CANCELLED'}
+
+        if mode in {'FLUID', 'PARTICLES'} and obj.type != 'MESH':
+            self.report({'ERROR'}, "Active object must be a Mesh for this VAT mode.")
+            return {'CANCELLED'}
+
+        relative_root = get_relative_root_object(context, export_obj, mode)
         
         depsgraph = context.evaluated_depsgraph_get()
 
@@ -286,13 +394,13 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
             # --- EXECUTE CORRESPONDING VAT TYPE exporter ---
             if mode == 'FLUID':
-                self.export_dynamic_mesh(context, obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
+                self.export_dynamic_mesh(context, export_obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
             elif mode == 'SOFT_BODY':
-                self.export_soft_body(context, obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
+                self.export_soft_body(context, export_obj, soft_body_sources, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name, relative_root)
             elif mode == 'RIGID':
-                self.export_rigid_body(context, obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
+                self.export_rigid_body(context, export_obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name, relative_root)
             elif mode == 'PARTICLES':
-                self.export_particles(context, obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
+                self.export_particles(context, export_obj, start_frame, end_frame, total_frames, depsgraph, out_dir, props, asset_name)
 
             summary = self._build_export_summary(asset_name, out_dir, mode, props)
             self._progress_advance("Validating exported files...")
@@ -311,6 +419,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             self.report({'ERROR'}, f"VAT export failed for {asset_name}: {exc}")
             return {'CANCELLED'}
         finally:
+            scene.frame_set(original_frame, subframe=original_subframe)
             self._progress_end()
 
         return {'FINISHED'}
@@ -414,13 +523,43 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             extra_fields={"Frame Vertex Counts": frame_vertex_counts}
         )
 
-    def export_soft_body(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name):
+    def export_soft_body(self, context, obj, source_objects, start, end, total, depsgraph, out_dir, props, asset_name, relative_root=None):
         self.report({'INFO'}, "Extracting Soft Body morph data...")
         self._progress_advance("Sampling soft body frames...")
-        eval_obj = obj.evaluated_get(depsgraph)
-        eval_mesh = eval_obj.to_mesh()
-        vertex_count = len(eval_mesh.vertices)
-        eval_obj.to_mesh_clear()
+        if not source_objects:
+            raise ValueError("No soft body source meshes found in the selected export scope.")
+
+        root_inv = relative_root.matrix_world.inverted() if relative_root else None
+
+        context.scene.frame_set(start)
+        base_position_parts = []
+        vertex_counts = []
+
+        for source_obj in source_objects:
+            eval_obj = source_obj.evaluated_get(depsgraph)
+            eval_mesh = eval_obj.to_mesh()
+            vertex_count = len(eval_mesh.vertices)
+            vertex_counts.append(vertex_count)
+
+            base_positions = np.zeros(vertex_count * 3, dtype=np.float32)
+            eval_mesh.vertices.foreach_get("co", base_positions)
+            base_positions = base_positions.reshape(-1, 3)
+
+            if root_inv:
+                rel_matrix = root_inv @ eval_obj.matrix_world
+                base_positions = np.array(
+                    [[*(rel_matrix @ mathutils.Vector(co))] for co in base_positions],
+                    dtype=np.float32
+                )
+
+            base_position_parts.append(base_positions)
+            eval_obj.to_mesh_clear()
+
+        vertex_count = sum(vertex_counts)
+        if vertex_count <= 0:
+            raise ValueError("Soft body export scope contains no evaluated vertices.")
+
+        base_positions = np.concatenate(base_position_parts, axis=0)
 
         pos_archive = np.zeros((total, vertex_count, 3), dtype=np.float32)
         rot_archive = np.zeros((total, vertex_count, 4), dtype=np.float32) # Quaternion rotations (XYZW)
@@ -430,21 +569,48 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         for idx, f in enumerate(range(start, end + 1)):
             context.scene.frame_set(f)
-            eval_obj = obj.evaluated_get(depsgraph)
-            eval_mesh = eval_obj.to_mesh()
-            
-            vertex_cos = np.zeros(vertex_count * 3, dtype=np.float32)
-            eval_mesh.vertices.foreach_get("co", vertex_cos)
-            vertex_cos = vertex_cos.reshape(-1, 3)
+            vertex_cos_parts = []
+            vertex_norm_parts = []
 
-            vertex_norms = np.zeros(vertex_count * 3, dtype=np.float32)
-            eval_mesh.vertices.foreach_get("normal", vertex_norms)
-            vertex_norms = vertex_norms.reshape(-1, 3)
+            for source_obj, source_vertex_count in zip(source_objects, vertex_counts):
+                eval_obj = source_obj.evaluated_get(depsgraph)
+                eval_mesh = eval_obj.to_mesh()
 
-            global_min = np.minimum(global_min, np.amin(vertex_cos, axis=0))
-            global_max = np.maximum(global_max, np.amax(vertex_cos, axis=0))
+                if len(eval_mesh.vertices) != source_vertex_count:
+                    eval_obj.to_mesh_clear()
+                    raise ValueError(
+                        f"Soft body source '{source_obj.name}' changed vertex count from {source_vertex_count} to {len(eval_mesh.vertices)} at frame {f}."
+                    )
 
-            pos_archive[idx] = vertex_cos
+                vertex_cos = np.zeros(source_vertex_count * 3, dtype=np.float32)
+                eval_mesh.vertices.foreach_get("co", vertex_cos)
+                vertex_cos = vertex_cos.reshape(-1, 3)
+                if root_inv:
+                    rel_matrix = root_inv @ eval_obj.matrix_world
+                    vertex_cos = np.array(
+                        [[*(rel_matrix @ mathutils.Vector(co))] for co in vertex_cos],
+                        dtype=np.float32
+                    )
+
+                vertex_norms = np.zeros(source_vertex_count * 3, dtype=np.float32)
+                eval_mesh.vertices.foreach_get("normal", vertex_norms)
+                vertex_norms = vertex_norms.reshape(-1, 3)
+
+                vertex_cos_parts.append(vertex_cos)
+                vertex_norm_parts.append(vertex_norms)
+                eval_obj.to_mesh_clear()
+
+            vertex_cos = np.concatenate(vertex_cos_parts, axis=0)
+            vertex_norms = np.concatenate(vertex_norm_parts, axis=0)
+
+            offsets = vertex_cos - base_positions
+            offsets = convert_blender_vectors_to_y_up(offsets)
+            vertex_norms = convert_blender_vectors_to_y_up(vertex_norms)
+
+            global_min = np.minimum(global_min, np.amin(offsets, axis=0))
+            global_max = np.maximum(global_max, np.amax(offsets, axis=0))
+
+            pos_archive[idx] = offsets
             
             # Simple conversion of normal directions into tangent space quaternions
             for v_idx in range(vertex_count):
@@ -452,25 +618,25 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                 quat = norm.to_track_quat('Z', 'Y')
                 rot_archive[idx, v_idx] = [quat.x, quat.y, quat.z, quat.w]
 
-            eval_obj.to_mesh_clear()
-
         self._progress_advance("Writing soft body textures...")
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self.save_texture(rot_archive, "rot", out_dir, asset_name, props)
+        self._progress_advance("Writing soft body carrier mesh...")
+        self.export_soft_body_glb(context, source_objects, start, depsgraph, out_dir, asset_name, vertex_counts, total, relative_root)
         self._progress_advance("Writing soft body metadata...")
         self.save_json("Softbody", total, vertex_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
-    def export_rigid_body(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name):
+    def export_rigid_body(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name, relative_root=None):
         self.report({'INFO'}, "Extracting Rigid Body chunks...")
         self._progress_advance("Sampling rigid body chunks...")
         # Rigid body exports expect linked chunk duplicates or separate mesh pieces
         # We group children or parent collections to isolate pivot arrays
-        chunks = [child for child in obj.children if child.type == 'MESH']
+        chunks = gather_mesh_descendants(obj)
         if not chunks:
             chunks = [obj] # Fallback to active object as single chunk
 
         chunk_count = len(chunks)
-        pos_archive = np.zeros((total, chunk_count, 3), dtype=np.float32)
+        pos_archive = np.zeros((total, chunk_count, 4), dtype=np.float32)
         rot_archive = np.zeros((total, chunk_count, 4), dtype=np.float32)
 
         global_min = np.array([1e10, 1e10, 1e10])
@@ -481,18 +647,27 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             for c_idx, chunk in enumerate(chunks):
                 eval_chunk = chunk.evaluated_get(depsgraph)
                 matrix = eval_chunk.matrix_world
+                if relative_root:
+                    matrix = relative_root.matrix_world.inverted() @ matrix
                 pos = matrix.to_translation()
                 rot = matrix.to_quaternion()
+                pos_y_up = convert_blender_vec_to_y_up((pos.x, pos.y, pos.z))
+                rot_y_up = convert_blender_quat_to_y_up(rot)
                 
-                pos_archive[idx, c_idx] = [pos.x, pos.y, pos.z]
-                rot_archive[idx, c_idx] = [rot.x, rot.y, rot.z, rot.w]
+                packed_rot = pack_rigid_quaternion(rot_y_up)
+                pos_archive[idx, c_idx, 0:3] = pos_y_up
+                pos_archive[idx, c_idx, 3] = packed_rot[3]
+                rot_archive[idx, c_idx, 0:3] = packed_rot[0:3]
+                rot_archive[idx, c_idx, 3] = 0.0
 
-                global_min = np.minimum(global_min, pos)
-                global_max = np.maximum(global_max, pos)
+                global_min = np.minimum(global_min, pos_y_up)
+                global_max = np.maximum(global_max, pos_y_up)
 
         self._progress_advance("Writing rigid body textures...")
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self.save_texture(rot_archive, "rot", out_dir, asset_name, props)
+        self._progress_advance("Writing rigid body carrier mesh...")
+        self.export_rigid_body_glb(context, chunks, start, depsgraph, out_dir, asset_name, total, relative_root)
         self._progress_advance("Writing rigid body metadata...")
         self.save_json("Rigidbody", total, chunk_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
@@ -550,41 +725,163 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         self._progress_advance("Writing particle textures...")
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
+        self._progress_advance("Writing particle carrier mesh...")
+        self.export_particles_glb(context, particle_count, total, out_dir, asset_name)
         self._progress_advance("Writing particle metadata...")
         self.save_json("Particles", total, particle_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
-    def export_dynamic_mesh_glb(self, context, initial_positions, triangle_count, out_dir, asset_name, texture_width, texture_height, rows_per_frame):
-        vertex_count = triangle_count * 3
-        if vertex_count <= 0:
-            raise ValueError("Dynamic mesh export has no triangles to export.")
+    def export_particles_glb(self, context, particle_count, total_frames, out_dir, asset_name):
+        if particle_count <= 0:
+            raise ValueError("Particle export has no particles to export.")
 
         mesh_name = f"{asset_name}_mesh"
         temp_mesh = bpy.data.meshes.new(mesh_name)
 
-        # The dynamic-mesh render mesh is only a stable carrier for UV/indexing.
-        # Actual animated positions come entirely from the VAT textures, so we do
-        # not need to bind this mesh to any particular simulation frame.
-        placeholder_triangle = (
-            (0.0, 0.0, 0.0),
-            (0.0001, 0.0, 0.0),
-            (0.0, 0.0001, 0.0),
-        )
-        vertices = [placeholder_triangle[i % 3] for i in range(vertex_count)]
-        faces = [(i, i + 1, i + 2) for i in range(0, vertex_count, 3)]
+        vertices = []
+        faces = []
+        for i in range(particle_count):
+            base = len(vertices)
+            vertices.extend([
+                (-0.5, 0.0, -0.5),
+                (0.5, 0.0, -0.5),
+                (0.5, 0.0, 0.5),
+                (-0.5, 0.0, 0.5),
+            ])
+            faces.extend([(base, base + 1, base + 2), (base, base + 2, base + 3)])
+
+        temp_mesh.from_pydata(vertices, [], faces)
+        temp_mesh.update()
+        temp_mesh.normals_split_custom_set_from_vertices([(0.0, 1.0, 0.0)] * len(vertices))
+
+        uv_layer = temp_mesh.uv_layers.new(name="UVMap")
+        vat_uv1 = temp_mesh.uv_layers.new(name="VAT_UV1")
+        quad_uvs = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+        for poly in temp_mesh.polygons:
+            particle_index = poly.vertices[0] // 4
+            slot_uv = (texel_center(particle_index, particle_count), texel_center(0, total_frames))
+            for loop_offset, loop_index in enumerate(poly.loop_indices):
+                vertex_index = poly.vertices[loop_offset]
+                uv_layer.data[loop_index].uv = quad_uvs[vertex_index % 4]
+                vat_uv1.data[loop_index].uv = slot_uv
+
+        self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
+
+    def export_soft_body_glb(self, context, source_objects, frame, depsgraph, out_dir, asset_name, vertex_counts, total_frames, relative_root=None):
+        context.scene.frame_set(frame)
+        mesh_name = f"{asset_name}_mesh"
+        temp_mesh = bpy.data.meshes.new(mesh_name)
+
+        vertices = []
+        faces = []
+        root_inv = relative_root.matrix_world.inverted() if relative_root else None
+
+        for source_obj in source_objects:
+            eval_obj = source_obj.evaluated_get(depsgraph)
+            eval_mesh = eval_obj.to_mesh()
+            if root_inv:
+                rel_matrix = root_inv @ eval_obj.matrix_world
+                eval_mesh.transform(rel_matrix)
+            if len(eval_mesh.loop_triangles) == 0:
+                eval_mesh.calc_loop_triangles()
+
+            base_vertex = len(vertices)
+            vertices.extend([tuple(vertex.co) for vertex in eval_mesh.vertices])
+            for tri in eval_mesh.loop_triangles:
+                faces.append(tuple(base_vertex + vi for vi in tri.vertices))
+
+            eval_obj.to_mesh_clear()
+
+        temp_mesh.from_pydata(vertices, [], faces)
+        temp_mesh.update()
+
+        if temp_mesh.uv_layers.get("UVMap"):
+            temp_mesh.uv_layers.remove(temp_mesh.uv_layers["UVMap"])
+        uv_layer = temp_mesh.uv_layers.new(name="UVMap")
+        if temp_mesh.uv_layers.get("VAT_UV1"):
+            temp_mesh.uv_layers.remove(temp_mesh.uv_layers["VAT_UV1"])
+        vat_uv1 = temp_mesh.uv_layers.new(name="VAT_UV1")
+        vertex_count = sum(vertex_counts)
+        for poly in temp_mesh.polygons:
+            for loop_offset, loop_index in enumerate(poly.loop_indices):
+                vertex_index = poly.vertices[loop_offset]
+                uv_layer.data[loop_index].uv = (0.0, 0.0)
+                vat_uv1.data[loop_index].uv = (
+                    texel_center(vertex_index, vertex_count),
+                    texel_center(0, total_frames)
+                )
+
+        self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
+
+    def export_rigid_body_glb(self, context, chunks, frame, depsgraph, out_dir, asset_name, total_frames, relative_root=None):
+        context.scene.frame_set(frame)
+        mesh_name = f"{asset_name}_mesh"
+        temp_mesh = bpy.data.meshes.new(mesh_name)
+
+        vertices = []
+        faces = []
+        chunk_loop_ranges = []
+        face_offset = 0
+
+        for chunk_index, chunk in enumerate(chunks):
+            eval_chunk = chunk.evaluated_get(depsgraph)
+            eval_mesh = eval_chunk.to_mesh()
+            matrix = eval_chunk.matrix_world
+            if relative_root:
+                matrix = relative_root.matrix_world.inverted() @ matrix
+
+            pivot = matrix.to_translation()
+            pivot_y_up = convert_blender_vec_to_y_up((pivot.x, pivot.y, pivot.z))
+            scale = matrix.to_scale()
+            chunk_vertices = []
+            for v in eval_mesh.vertices:
+                local = v.co
+                scaled_local = (
+                    local.x * scale.x,
+                    local.y * scale.y,
+                    local.z * scale.z,
+                )
+                chunk_vertices.append((
+                    pivot.x + scaled_local[0],
+                    pivot.y + scaled_local[1],
+                    pivot.z + scaled_local[2],
+                ))
+            base_vertex = len(vertices)
+            vertices.extend(chunk_vertices)
+
+            chunk_face_indices = []
+            if len(eval_mesh.loop_triangles) == 0:
+                eval_mesh.calc_loop_triangles()
+            for tri in eval_mesh.loop_triangles:
+                face = tuple(base_vertex + vi for vi in tri.vertices)
+                faces.append(face)
+                chunk_face_indices.append(face_offset)
+                face_offset += 1
+
+            chunk_loop_ranges.append((chunk_index, chunk_face_indices, (pivot_y_up[0], pivot_y_up[1], pivot_y_up[2])))
+            eval_chunk.to_mesh_clear()
+
         temp_mesh.from_pydata(vertices, [], faces)
         temp_mesh.update()
 
         uv_layer = temp_mesh.uv_layers.new(name="UVMap")
-        for poly in temp_mesh.polygons:
-            for loop_offset, loop_index in enumerate(poly.loop_indices):
-                vertex_index = poly.vertices[loop_offset]
-                row_index = vertex_index // texture_width
-                col_index = vertex_index % texture_width
-                uv_layer.data[loop_index].uv = (
-                    texel_center(col_index, texture_width),
-                    texel_center(row_index, rows_per_frame)
-                )
+        vat_uv1 = temp_mesh.uv_layers.new(name="VAT_UV1")
+        vat_uv2 = temp_mesh.uv_layers.new(name="VAT_UV2")
+        vat_uv3 = temp_mesh.uv_layers.new(name="VAT_UV3")
 
+        for chunk_index, face_indices, pivot in chunk_loop_ranges:
+            slot_uv = (texel_center(chunk_index, len(chunks)), texel_center(0, total_frames))
+            for face_index in face_indices:
+                poly = temp_mesh.polygons[face_index]
+                for loop_index in poly.loop_indices:
+                    uv_layer.data[loop_index].uv = (0.0, 0.0)
+                    vat_uv1.data[loop_index].uv = slot_uv
+                    vat_uv2.data[loop_index].uv = (pivot[0], 0.0)
+                    vat_uv3.data[loop_index].uv = (pivot[1], pivot[2])
+
+        self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
+
+    def export_temp_mesh_glb(self, context, temp_mesh, out_dir, asset_name):
+        mesh_name = temp_mesh.name
         temp_obj = bpy.data.objects.new(mesh_name, temp_mesh)
         temp_collection = bpy.data.collections.new(f"{mesh_name}_export")
         context.scene.collection.children.link(temp_collection)
@@ -622,6 +919,40 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             bpy.data.collections.remove(temp_collection)
             bpy.data.objects.remove(temp_obj)
             bpy.data.meshes.remove(temp_mesh)
+
+    def export_dynamic_mesh_glb(self, context, initial_positions, triangle_count, out_dir, asset_name, texture_width, texture_height, rows_per_frame):
+        vertex_count = triangle_count * 3
+        if vertex_count <= 0:
+            raise ValueError("Dynamic mesh export has no triangles to export.")
+
+        mesh_name = f"{asset_name}_mesh"
+        temp_mesh = bpy.data.meshes.new(mesh_name)
+
+        # The dynamic-mesh render mesh is only a stable carrier for UV/indexing.
+        # Actual animated positions come entirely from the VAT textures, so we do
+        # not need to bind this mesh to any particular simulation frame.
+        placeholder_triangle = (
+            (0.0, 0.0, 0.0),
+            (0.0001, 0.0, 0.0),
+            (0.0, 0.0001, 0.0),
+        )
+        vertices = [placeholder_triangle[i % 3] for i in range(vertex_count)]
+        faces = [(i, i + 1, i + 2) for i in range(0, vertex_count, 3)]
+        temp_mesh.from_pydata(vertices, [], faces)
+        temp_mesh.update()
+
+        uv_layer = temp_mesh.uv_layers.new(name="UVMap")
+        for poly in temp_mesh.polygons:
+            for loop_offset, loop_index in enumerate(poly.loop_indices):
+                vertex_index = poly.vertices[loop_offset]
+                row_index = vertex_index // texture_width
+                col_index = vertex_index % texture_width
+                uv_layer.data[loop_index].uv = (
+                    texel_center(col_index, texture_width),
+                    texel_center(row_index, rows_per_frame)
+                )
+
+        self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
 
     def save_exr(self, data, suffix, out_dir, name):
         height, width = data.shape[0], data.shape[1]

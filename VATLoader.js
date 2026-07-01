@@ -459,21 +459,6 @@ export class VATLoader {
       }
     }
 
-    if (!overrides.activePixelsRatio && ['Particles', 'Softbody', 'Rigidbody'].includes(type)) {
-      const posTex = textures.vatPosTex;
-      const texWidth = posTex?.image?.width ?? posTex?.source?.data?.width ?? 0;
-      const texHeight = posTex?.image?.height ?? posTex?.source?.data?.height ?? 0;
-      const frameCount = overrides.frameCount || 0;
-      const vertexCount = overrides.vertexCount || 0;
-      if (texWidth > 0 && texHeight > 0 && vertexCount > 0 && frameCount > 0) {
-        const ratioX = vertexCount / texWidth;
-        const ratioY = frameCount / texHeight;
-        if (ratioX > 0.0 && ratioX <= 1.0 && ratioY > 0.0 && ratioY <= 1.0) {
-          overrides.activePixelsRatio = new THREE.Vector2(ratioX, ratioY);
-        }
-      }
-    }
-
     return {
       name,
       type,
