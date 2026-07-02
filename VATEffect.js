@@ -84,6 +84,7 @@ uniform bool u_dynamicMeshUsesPositionAlphaMask;
 uniform sampler2D u_dynamicMeshFrameCountTex;
 uniform bool u_dynamicMeshHasFrameCountTexture;
 uniform bool u_hasActivePixelsRatioOverride;
+uniform bool u_debugBypassVat;
 
 // Structs
 struct Vat3_AnimationData {
@@ -649,6 +650,17 @@ vec3 getRigidPivot(vec3 position, vec3 vatPivot) {
 // Main deformation router
 Vat3_Outputs applyVatDeformation(vec3 position, vec3 normal, vec3 tangent, vec2 uv, vec2 uv1, vec3 vatPivot, int variant) {
   Vat3_Outputs vatOutputs;
+
+  if (u_debugBypassVat) {
+    vatOutputs.outAnimationProgress = vec3(0.0);
+    vatOutputs.outColorAndAlpha = vec4(1.0);
+    vatOutputs.outNormal = normal;
+    vatOutputs.outPosition = position;
+    vatOutputs.outSpareColorAndAlpha = vec4(0.0);
+    vatOutputs.outTangent = tangent;
+    vatOutputs.surfaceUv = uv;
+    return vatOutputs;
+  }
   
   Vat3_AnimationData animData = computeAnimationData();
   
@@ -1118,6 +1130,7 @@ export class VATEffect {
     this._speed = 1.0;
     this._time = 0.0;
     this._enablePlayback = true;
+    this._debugBypass = false;
     this._camera = options.camera || null;
     const sourceDynamicMeshFrameVertexCounts = this.vatConfig.staticInputs.dynamicMeshFrameVertexCounts || [];
     const dynamicMeshFrameCountTexture = this.createDynamicMeshFrameCountTexture(sourceDynamicMeshFrameVertexCounts);
@@ -1195,7 +1208,8 @@ export class VATEffect {
       u_dynamicMeshUsesPositionAlphaMask: { value: Boolean(this.vatConfig.staticInputs.dynamicMeshUsesPositionAlphaMask) },
       u_dynamicMeshFrameCountTex: { value: dynamicMeshFrameCountTexture },
       u_dynamicMeshHasFrameCountTexture: { value: sourceDynamicMeshFrameVertexCounts.length > 0 },
-      u_hasActivePixelsRatioOverride: { value: Boolean(this.vatConfig.staticInputs.activePixelsRatio) }
+      u_hasActivePixelsRatioOverride: { value: Boolean(this.vatConfig.staticInputs.activePixelsRatio) },
+      u_debugBypassVat: { value: false }
     };
 
     // Particles default albedo map if texture is set in options
@@ -1266,6 +1280,11 @@ export class VATEffect {
   setEnabled(enabled) {
     this._enablePlayback = enabled;
     this.uniforms.u_enablePlayback.value = enabled;
+  }
+
+  setDebugBypass(enabled) {
+    this._debugBypass = Boolean(enabled);
+    this.uniforms.u_debugBypassVat.value = this._debugBypass;
   }
 
   setInstanceTimeOffset(index, offset) {

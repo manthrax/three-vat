@@ -289,8 +289,6 @@ export class VATLoader {
       defaults.supportSurfaceNormalMaps = true;
       defaults.surfaceNormals = true;
       defaults.useCompressedNormals = false;
-    } else if (type === 'Softbody') {
-      defaults.useCompressedNormals = isHdrVal;
     }
 
     // Merge metadata
@@ -309,6 +307,9 @@ export class VATLoader {
         : Boolean(metadata['Invert Frame V']),
       particleShardCount: metadata['Particle Shard Count'] || 0,
       particlePiecesScaleAreInPositionAlpha: Boolean(metadata['Particle Pieces Scale Are In Position Alpha']),
+      useCompressedNormals: metadata['Use Compressed Normals'] !== undefined
+        ? Boolean(metadata['Use Compressed Normals'])
+        : defaults.useCompressedNormals,
       useSpareColor: Boolean(metadata['Spare Color Texture']),
       usePos2: Boolean(metadata['Two Position Textures']),
       useLookup: metadata['Use Lookup Texture'] !== undefined ? Boolean(metadata['Use Lookup Texture']) : defaults.useLookup,

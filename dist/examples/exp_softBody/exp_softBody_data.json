@@ -9,24 +9,15 @@
         "Vertex Count": 386,
         "Active Pixels Ratio X": 1.0,
         "Active Pixels Ratio Y": 1.0,
-        "Invert Frame V": true,
         "Bound Min X": -0.3048573434352875,
         "Bound Min Y": -4.865841865539551,
         "Bound Min Z": -0.29783380031585693,
         "Bound Max X": 0.2860112488269806,
         "Bound Max Y": 0.0,
         "Bound Max Z": 0.28600412607192993,
-        "Pivot Min X": 0.0,
-        "Pivot Min Y": 0.0,
-        "Pivot Min Z": 0.0,
-        "Pivot Max X": 1.0,
-        "Pivot Max Y": 1.0,
-        "Pivot Max Z": 1.0,
         "Spare Color Texture": 0,
         "Two Position Textures": 0,
-        "Particle Pieces Scale Are In Position Alpha": false,
-        "Use Lookup Texture": 1,
-        "Dynamic Mesh Packed Position Alpha Mask": false,
-        "Legacy Format": false
+        "Invert Frame V": true,
+        "Use Compressed Normals": true
     }
 ]

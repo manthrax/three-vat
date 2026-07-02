@@ -16,6 +16,7 @@ import math
 import mathutils
 
 _vat_sync_in_progress = False
+_vat_export_in_progress = False
 
 
 def normalize_export_path(path_value):
@@ -150,6 +151,32 @@ def convert_blender_vectors_to_y_up(vectors):
 def convert_blender_quat_to_y_up(quat):
     conversion = mathutils.Euler((-math.pi * 0.5, 0.0, 0.0), 'XYZ').to_quaternion()
     return conversion @ quat @ conversion.inverted()
+
+
+def normalize_quaternion(quat):
+    result = quat.copy()
+    result.normalize()
+    return result
+
+
+def pack_compressed_normals(normals):
+    arr = np.asarray(normals, dtype=np.float32)
+    if arr.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+
+    lengths = np.linalg.norm(arr, axis=1, keepdims=True)
+    lengths[lengths == 0.0] = 1.0
+    arr = arr / lengths
+
+    y_term = np.clip((1.0 + arr[:, 1]) * 0.5, 1.0e-8, 1.0)
+    scale = np.sqrt(y_term)
+    angle_x = arr[:, 0] / scale
+    angle_y = arr[:, 2] / scale
+
+    packed_x = np.clip(np.floor(((angle_x + 2.0) * 0.25) * 31.5 + 0.5), 0.0, 31.0).astype(np.int32)
+    packed_y = np.clip(np.floor(((angle_y + 2.0) * 0.25) * 31.5 + 0.5), 0.0, 31.0).astype(np.int32)
+
+    return ((packed_x * 32 + packed_y) / 1024.0).astype(np.float32)
 
 
 def transform_positions_with_matrix(vectors, matrix):
@@ -326,6 +353,11 @@ def sync_props_from_selection(context=None, scene=None, obj=None):
 
 
 def vat_selection_sync_handler(scene, depsgraph):
+    global _vat_export_in_progress
+
+    if _vat_export_in_progress:
+        return
+
     context = bpy.context
     active_scene = context.scene if context else scene
     active_object = context.active_object if context else None
@@ -380,6 +412,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         }
 
     def execute(self, context):
+        global _vat_export_in_progress
+
         scene = context.scene
         obj = context.active_object
             
@@ -393,6 +427,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         soft_body_sources = None
         original_frame = scene.frame_current
         original_subframe = getattr(scene, "frame_subframe", 0.0)
+        original_active = context.view_layer.objects.active
+        original_selection = list(context.selected_objects)
 
         if not obj:
             self.report({'ERROR'}, "Select an object to export.")
@@ -430,6 +466,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             total_steps = 4
 
         self._progress_start(total_steps)
+        _vat_export_in_progress = True
 
         try:
             self._progress_advance(f"VAT export started: {asset_name} ({mode})")
@@ -461,7 +498,21 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             self.report({'ERROR'}, f"VAT export failed for {asset_name}: {exc}")
             return {'CANCELLED'}
         finally:
+            _vat_export_in_progress = False
             scene.frame_set(original_frame, subframe=original_subframe)
+            try:
+                bpy.ops.object.select_all(action='DESELECT')
+                for selected_obj in original_selection:
+                    if selected_obj.name in bpy.data.objects:
+                        selected_obj.select_set(True)
+                if original_active and original_active.name in bpy.data.objects:
+                    context.view_layer.objects.active = original_active
+            except Exception:
+                pass
+            try:
+                sync_props_from_selection(context=context, scene=scene, obj=original_active or obj)
+            except Exception:
+                pass
             self._progress_end()
 
         return {'FINISHED'}
@@ -600,8 +651,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         base_positions = np.concatenate(base_position_parts, axis=0)
 
-        pos_archive = np.zeros((total, vertex_count, 3), dtype=np.float32)
-        rot_archive = np.zeros((total, vertex_count, 4), dtype=np.float32) # Quaternion rotations (XYZW)
+        pos_archive = np.zeros((total, vertex_count, 4), dtype=np.float32)
+        rot_archive = np.zeros((total, vertex_count, 3), dtype=np.float32)
 
         global_min = np.array([1e10, 1e10, 1e10])
         global_max = np.array([-1e10, -1e10, -1e10])
@@ -649,13 +700,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             global_min = np.minimum(global_min, np.amin(offsets, axis=0))
             global_max = np.maximum(global_max, np.amax(offsets, axis=0))
 
-            pos_archive[idx] = offsets
-            
-            # Simple conversion of normal directions into tangent space quaternions
-            for v_idx in range(vertex_count):
-                norm = mathutils.Vector(vertex_norms[v_idx])
-                quat = norm.to_track_quat('Z', 'Y')
-                rot_archive[idx, v_idx] = [quat.x, quat.y, quat.z, quat.w]
+            pos_archive[idx, :, 0:3] = offsets
+            pos_archive[idx, :, 3] = pack_compressed_normals(vertex_norms)
 
         self._progress_advance("Writing soft body textures...")
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
@@ -663,7 +709,18 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         self._progress_advance("Writing soft body carrier mesh...")
         self.export_soft_body_glb(context, source_objects, start, depsgraph, out_dir, asset_name, vertex_counts, total, relative_root)
         self._progress_advance("Writing soft body metadata...")
-        self.save_json("Softbody", total, vertex_count, global_min, global_max, out_dir, asset_name, context.scene, props)
+        self.save_json(
+            "Softbody",
+            total,
+            vertex_count,
+            global_min,
+            global_max,
+            out_dir,
+            asset_name,
+            context.scene,
+            props,
+            extra_fields={"Use Compressed Normals": True}
+        )
 
     def export_rigid_body(self, context, obj, start, end, total, depsgraph, out_dir, props, asset_name, relative_root=None):
         self.report({'INFO'}, "Extracting Rigid Body chunks...")
@@ -677,9 +734,30 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         chunk_count = len(chunks)
         pos_archive = np.zeros((total, chunk_count, 4), dtype=np.float32)
         rot_archive = np.zeros((total, chunk_count, 4), dtype=np.float32)
+        bind_matrices = []
+        bind_pivots_y_up = []
+        bind_rotations_y_up = []
 
         global_min = np.array([1e10, 1e10, 1e10])
         global_max = np.array([-1e10, -1e10, -1e10])
+
+        context.scene.frame_set(start)
+        for chunk in chunks:
+            eval_chunk = chunk.evaluated_get(depsgraph)
+            bind_matrix = eval_chunk.matrix_world.copy()
+            if relative_root:
+                bind_matrix = relative_root.matrix_world.inverted() @ bind_matrix
+            bind_matrices.append(bind_matrix.copy())
+
+            bind_pos = bind_matrix.to_translation()
+            bind_pivots_y_up.append(
+                convert_blender_vec_to_y_up((bind_pos.x, bind_pos.y, bind_pos.z))
+            )
+
+            bind_rot_y_up = normalize_quaternion(
+                convert_blender_quat_to_y_up(bind_matrix.to_quaternion())
+            )
+            bind_rotations_y_up.append(bind_rot_y_up)
 
         for idx, f in enumerate(range(start, end + 1)):
             context.scene.frame_set(f)
@@ -689,11 +767,13 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                 if relative_root:
                     matrix = relative_root.matrix_world.inverted() @ matrix
                 pos = matrix.to_translation()
-                rot = matrix.to_quaternion()
+                rot = normalize_quaternion(matrix.to_quaternion())
                 pos_y_up = convert_blender_vec_to_y_up((pos.x, pos.y, pos.z))
-                rot_y_up = convert_blender_quat_to_y_up(rot)
+                rot_y_up = normalize_quaternion(convert_blender_quat_to_y_up(rot))
+                bind_rot_y_up = bind_rotations_y_up[c_idx]
+                rot_delta_y_up = normalize_quaternion(rot_y_up @ bind_rot_y_up.inverted())
                 
-                packed_rot = pack_rigid_quaternion(rot_y_up)
+                packed_rot = pack_rigid_quaternion(rot_delta_y_up)
                 pos_archive[idx, c_idx, 0:3] = pos_y_up
                 pos_archive[idx, c_idx, 3] = packed_rot[3]
                 rot_archive[idx, c_idx, 0:3] = packed_rot[0:3]
@@ -706,7 +786,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         self.save_texture(pos_archive, "pos", out_dir, asset_name, props, global_min, global_max)
         self.save_texture(rot_archive, "rot", out_dir, asset_name, props)
         self._progress_advance("Writing rigid body carrier mesh...")
-        self.export_rigid_body_glb(context, chunks, start, depsgraph, out_dir, asset_name, total, relative_root)
+        self.export_rigid_body_glb(context, chunks, start, depsgraph, out_dir, asset_name, total, relative_root, bind_matrices, bind_pivots_y_up)
         self._progress_advance("Writing rigid body metadata...")
         self.save_json("Rigidbody", total, chunk_count, global_min, global_max, out_dir, asset_name, context.scene, props)
 
@@ -812,6 +892,8 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         vertices = []
         faces = []
+        normals = []
+        display_uvs = []
         vat_vertex_indices = []
         root_inv = relative_root.matrix_world.inverted() if relative_root else None
         source_vertex_offset = 0
@@ -819,17 +901,31 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         for source_obj in source_objects:
             eval_obj = source_obj.evaluated_get(depsgraph)
             eval_mesh = eval_obj.to_mesh()
+            rel_matrix = None
             if root_inv:
                 rel_matrix = root_inv @ eval_obj.matrix_world
                 eval_mesh.transform(rel_matrix)
             if len(eval_mesh.loop_triangles) == 0:
                 eval_mesh.calc_loop_triangles()
 
+            loop_normals = np.zeros(len(eval_mesh.loops) * 3, dtype=np.float32)
+            eval_mesh.loops.foreach_get("normal", loop_normals)
+            loop_normals = loop_normals.reshape(-1, 3)
+            if rel_matrix is not None:
+                loop_normals = transform_normals_with_matrix(loop_normals, rel_matrix)
+            source_uv_layer = eval_mesh.uv_layers.active.data if eval_mesh.uv_layers.active else None
+
             for tri in eval_mesh.loop_triangles:
                 face = []
-                for original_vertex_index in tri.vertices:
+                for corner_index, original_vertex_index in enumerate(tri.vertices):
+                    loop_index = tri.loops[corner_index]
                     output_vertex_index = len(vertices)
                     vertices.append(tuple(eval_mesh.vertices[original_vertex_index].co))
+                    normals.append(tuple(loop_normals[loop_index]))
+                    if source_uv_layer is not None:
+                        display_uvs.append(tuple(source_uv_layer[loop_index].uv))
+                    else:
+                        display_uvs.append((0.0, 0.0))
                     vat_vertex_indices.append(source_vertex_offset + original_vertex_index)
                     face.append(output_vertex_index)
                 faces.append(tuple(face))
@@ -839,6 +935,10 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         temp_mesh.from_pydata(vertices, [], faces)
         temp_mesh.update()
+        for poly in temp_mesh.polygons:
+            poly.use_smooth = True
+        if normals:
+            temp_mesh.normals_split_custom_set_from_vertices(normals)
 
         if temp_mesh.uv_layers.get("UVMap"):
             temp_mesh.uv_layers.remove(temp_mesh.uv_layers["UVMap"])
@@ -850,7 +950,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         for poly in temp_mesh.polygons:
             for loop_offset, loop_index in enumerate(poly.loop_indices):
                 vertex_index = poly.vertices[loop_offset]
-                uv_layer.data[loop_index].uv = (0.0, 0.0)
+                uv_layer.data[loop_index].uv = display_uvs[vertex_index]
                 vat_uv1.data[loop_index].uv = (
                     texel_center(vat_vertex_indices[vertex_index], vertex_count),
                     texel_center(0, total_frames)
@@ -858,46 +958,55 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
 
-    def export_rigid_body_glb(self, context, chunks, frame, depsgraph, out_dir, asset_name, total_frames, relative_root=None):
+    def export_rigid_body_glb(self, context, chunks, frame, depsgraph, out_dir, asset_name, total_frames, relative_root=None, bind_matrices=None, bind_pivots_y_up=None):
         context.scene.frame_set(frame)
         mesh_name = f"{asset_name}_mesh"
         temp_mesh = bpy.data.meshes.new(mesh_name)
 
         vertices = []
         faces = []
+        normals = []
+        display_uvs = []
         piece_slots = []
         piece_pivots = []
+
+        if bind_matrices is None:
+            bind_matrices = [None] * len(chunks)
+        if bind_pivots_y_up is None:
+            bind_pivots_y_up = [None] * len(chunks)
 
         for chunk_index, chunk in enumerate(chunks):
             eval_chunk = chunk.evaluated_get(depsgraph)
             eval_mesh = eval_chunk.to_mesh()
-            matrix = eval_chunk.matrix_world
-            if relative_root:
-                matrix = relative_root.matrix_world.inverted() @ matrix
+            bind_matrix = bind_matrices[chunk_index]
+            if bind_matrix is None:
+                bind_matrix = eval_chunk.matrix_world
+                if relative_root:
+                    bind_matrix = relative_root.matrix_world.inverted() @ bind_matrix
+            pivot_y_up = bind_pivots_y_up[chunk_index]
+            if pivot_y_up is None:
+                bind_pos = bind_matrix.to_translation()
+                pivot_y_up = convert_blender_vec_to_y_up((bind_pos.x, bind_pos.y, bind_pos.z))
 
-            pivot = matrix.to_translation()
-            pivot_y_up = convert_blender_vec_to_y_up((pivot.x, pivot.y, pivot.z))
-            scale = matrix.to_scale()
-            chunk_vertices = []
-            for v in eval_mesh.vertices:
-                local = v.co
-                scaled_local = (
-                    local.x * scale.x,
-                    local.y * scale.y,
-                    local.z * scale.z,
-                )
-                chunk_vertices.append((
-                    pivot.x + scaled_local[0],
-                    pivot.y + scaled_local[1],
-                    pivot.z + scaled_local[2],
-                ))
             if len(eval_mesh.loop_triangles) == 0:
                 eval_mesh.calc_loop_triangles()
+            loop_normals = np.zeros(len(eval_mesh.loops) * 3, dtype=np.float32)
+            eval_mesh.loops.foreach_get("normal", loop_normals)
+            loop_normals = loop_normals.reshape(-1, 3)
+            loop_normals = transform_normals_with_matrix(loop_normals, bind_matrix)
+            source_uv_layer = eval_mesh.uv_layers.active.data if eval_mesh.uv_layers.active else None
+            chunk_vertices = [tuple(bind_matrix @ v.co) for v in eval_mesh.vertices]
             for tri in eval_mesh.loop_triangles:
                 face = []
-                for original_vertex_index in tri.vertices:
+                for corner_index, original_vertex_index in enumerate(tri.vertices):
+                    loop_index = tri.loops[corner_index]
                     output_vertex_index = len(vertices)
                     vertices.append(chunk_vertices[original_vertex_index])
+                    normals.append(tuple(loop_normals[loop_index]))
+                    if source_uv_layer is not None:
+                        display_uvs.append(tuple(source_uv_layer[loop_index].uv))
+                    else:
+                        display_uvs.append((0.0, 0.0))
                     piece_slots.append(chunk_index)
                     piece_pivots.append((pivot_y_up[0], pivot_y_up[1], pivot_y_up[2]))
                     face.append(output_vertex_index)
@@ -906,6 +1015,10 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         temp_mesh.from_pydata(vertices, [], faces)
         temp_mesh.update()
+        for poly in temp_mesh.polygons:
+            poly.use_smooth = True
+        if normals:
+            temp_mesh.normals_split_custom_set_from_vertices(normals)
 
         uv_layer = temp_mesh.uv_layers.new(name="UVMap")
         vat_uv1 = temp_mesh.uv_layers.new(name="VAT_UV1")
@@ -918,7 +1031,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
                 chunk_index = piece_slots[vertex_index]
                 pivot = piece_pivots[vertex_index]
                 slot_uv = (texel_center(chunk_index, len(chunks)), texel_center(0, total_frames))
-                uv_layer.data[loop_index].uv = (0.0, 0.0)
+                uv_layer.data[loop_index].uv = display_uvs[vertex_index]
                 vat_uv1.data[loop_index].uv = slot_uv
                 vat_uv2.data[loop_index].uv = (pivot[0], 0.0)
                 vat_uv3.data[loop_index].uv = (pivot[1], pivot[2])
@@ -999,7 +1112,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
 
         self.export_temp_mesh_glb(context, temp_mesh, out_dir, asset_name)
 
-    def save_exr(self, data, suffix, out_dir, name):
+    def save_exr(self, data, suffix, out_dir, name, flip_vertical=False):
         height, width = data.shape[0], data.shape[1]
         channels = data.shape[2] if len(data.shape) > 2 else 1
         
@@ -1013,6 +1126,9 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             rgba_pixels[:, :, 0] = data
             rgba_pixels[:, :, 1] = data
             rgba_pixels[:, :, 2] = data
+
+        if flip_vertical:
+            rgba_pixels = np.flipud(rgba_pixels).copy()
             
         img.pixels.foreach_set(rgba_pixels.ravel())
         img.filepath_raw = os.path.join(out_dir, f"{name}_{suffix}.exr")
@@ -1020,9 +1136,9 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         img.save()
         bpy.data.images.remove(img)
 
-    def save_texture(self, data, suffix, out_dir, name, props, min_vec=None, max_vec=None):
+    def save_texture(self, data, suffix, out_dir, name, props, min_vec=None, max_vec=None, flip_vertical=False):
         if props.export_hdr_textures:
-            self.save_exr(data, suffix, out_dir, name)
+            self.save_exr(data, suffix, out_dir, name, flip_vertical=flip_vertical)
             return
 
         if suffix == "pos":
@@ -1032,9 +1148,9 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         else:
             encoded = normalize_signed(data)
 
-        self.save_png(encoded, suffix, out_dir, name)
+        self.save_png(encoded, suffix, out_dir, name, flip_vertical=flip_vertical)
 
-    def save_png(self, data, suffix, out_dir, name):
+    def save_png(self, data, suffix, out_dir, name, flip_vertical=False):
         height, width = data.shape[0], data.shape[1]
         img = bpy.data.images.new(f"{name}_{suffix}", width=width, height=height, alpha=True, float_buffer=False)
         channels = data.shape[2] if len(data.shape) > 2 else 1
@@ -1048,6 +1164,10 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             rgba_pixels[:, :, 0] = clamped
             rgba_pixels[:, :, 1] = clamped
             rgba_pixels[:, :, 2] = clamped
+
+        if flip_vertical:
+            rgba_pixels = np.flipud(rgba_pixels).copy()
+
         img.pixels.foreach_set(rgba_pixels.ravel())
         img.filepath_raw = os.path.join(out_dir, f"{name}_{suffix}.png")
         img.file_format = 'PNG'
@@ -1058,7 +1178,7 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
         axis_system = "Right-Handed Y-Up"
         export_fps = get_scene_fps(scene)
 
-        # Format matching Houdini native VAT side-car schema
+        # Start from the minimal Houdini-style sidecar fields shared across variants.
         entry = {
             "VAT Type": vat_type,
             "Name": name,
@@ -1069,26 +1189,27 @@ class OBJECT_OT_export_vat(bpy.types.Operator):
             "Vertex Count": vertices,
             "Active Pixels Ratio X": 1.0,
             "Active Pixels Ratio Y": 1.0,
-            "Invert Frame V": True,
             "Bound Min X": float(g_min[0]),
             "Bound Min Y": float(g_min[1]),
             "Bound Min Z": float(g_min[2]),
             "Bound Max X": float(g_max[0]),
             "Bound Max Y": float(g_max[1]),
             "Bound Max Z": float(g_max[2]),
-            "Pivot Min X": 0.0,
-            "Pivot Min Y": 0.0,
-            "Pivot Min Z": 0.0,
-            "Pivot Max X": 1.0,
-            "Pivot Max Y": 1.0,
-            "Pivot Max Z": 1.0,
             "Spare Color Texture": 0,
-            "Two Position Textures": 0,
-            "Particle Pieces Scale Are In Position Alpha": True if vat_type == "Particles" else False,
-            "Use Lookup Texture": 0 if vat_type == "DynamicMesh" else 1,
-            "Dynamic Mesh Packed Position Alpha Mask": True if vat_type == "DynamicMesh" else False,
-            "Legacy Format": False
+            "Two Position Textures": 0
         }
+
+        # Keep only variant-specific metadata that is actually consumed by the
+        # current export/runtime path and not already encoded in the mesh/textures.
+        if vat_type == "Softbody":
+            entry["Invert Frame V"] = True
+        elif vat_type == "Rigidbody":
+            entry["Invert Frame V"] = True
+        elif vat_type == "Particles":
+            entry["Particle Pieces Scale Are In Position Alpha"] = True
+        elif vat_type == "DynamicMesh":
+            entry["Use Lookup Texture"] = 0
+            entry["Dynamic Mesh Packed Position Alpha Mask"] = True
 
         if extra_fields:
             entry.update(extra_fields)
